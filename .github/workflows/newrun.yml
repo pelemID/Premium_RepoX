@@ -18,7 +18,7 @@ permissions:
 
 env:
   # Ubah sesuai selera, dipakai kalau repo.json perlu dibuat ulang
-  REPO_NAME: "Premium_RepoX3"
+  REPO_NAME: "Premium_RepoX"
   REPO_DESC: "CloudStream Premium Repository"
 
 jobs:
