@@ -32,6 +32,7 @@ class MovieBoxProvider : MainAPI() {
         private const val TAG = "MovieBox"
         private const val CS_USER_AGENT = "com.community.oneroom/50020088 (Linux; U; Android 13; en_US; Samsung; Build/TQ3A.230901.001)"
         private const val PLAYBACK_API_BASE = "https://api6.aoneroom.com"
+        private const val TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49"
         /**
          * x-client-info dirakit saat request, bukan konstanta, karena device_id
          * berasal dari identity persisten per-instalasi.
@@ -752,6 +753,122 @@ class MovieBoxProvider : MainAPI() {
         return out
     }
 
+    // ---------------------------------------------------------------
+    // TRAILER ONLY — external fallback karena MovieBox current backend
+    // mengembalikan "App Upgrade Notice" sebagai trailer untuk semua judul.
+    //
+    // Hanya title/year/type yang dipakai untuk mencari match TMDB.
+    // Jika match aman atau trailer YouTube tidak ditemukan, trailer DIHILANGKAN
+    // daripada memakai promo MovieBox yang salah.
+    // ---------------------------------------------------------------
+    private fun normalizeTrailerTitle(value: String?): String =
+        value.orEmpty()
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+
+    private suspend fun resolveTmdbTrailer(
+        title: String,
+        year: Int?,
+        subjectType: Int
+    ): String? {
+        val mediaType = if (subjectType == 2) "tv" else "movie"
+        val encodedTitle = URLEncoder.encode(title, "UTF-8")
+
+        return try {
+            val searchUrl =
+                "https://api.themoviedb.org/3/search/$mediaType" +
+                    "?api_key=$TMDB_API_KEY&query=$encodedTitle"
+
+            val search = app.get(searchUrl).parsedSafe<TmdbSearchResponse>()
+            val wantedTitle = normalizeTrailerTitle(title)
+
+            val exactTitleMatches = search?.results.orEmpty().filter { item ->
+                val candidates = listOf(
+                    item.title,
+                    item.name,
+                    item.originalTitle,
+                    item.originalName
+                ).map(::normalizeTrailerTitle)
+
+                candidates.any { it.isNotBlank() && it == wantedTitle }
+            }
+
+            val safeMatch = when {
+                exactTitleMatches.isEmpty() -> null
+
+                year != null -> {
+                    exactTitleMatches.firstOrNull { item ->
+                        val candidateYear =
+                            (item.releaseDate ?: item.firstAirDate)
+                                ?.take(4)
+                                ?.toIntOrNull()
+                        candidateYear == year
+                    } ?: exactTitleMatches.firstOrNull { item ->
+                        val candidateYear =
+                            (item.releaseDate ?: item.firstAirDate)
+                                ?.take(4)
+                                ?.toIntOrNull()
+                        candidateYear != null && kotlin.math.abs(candidateYear - year) <= 1
+                    }
+                }
+
+                else -> exactTitleMatches.firstOrNull()
+            }
+
+            if (safeMatch == null) {
+                Log.d(TAG, "[TRAILER] TMDB safe match tidak ditemukan title=$title year=$year type=$mediaType")
+                null
+            } else {
+                val videosUrl =
+                    "https://api.themoviedb.org/3/$mediaType/${safeMatch.id}/videos" +
+                        "?api_key=$TMDB_API_KEY"
+
+                val videos = app.get(videosUrl)
+                    .parsedSafe<TmdbVideosResponse>()
+                    ?.results
+                    .orEmpty()
+                    .filter {
+                        it.site.equals("YouTube", ignoreCase = true) &&
+                            !it.key.isNullOrBlank() &&
+                            (
+                                it.type.equals("Trailer", ignoreCase = true) ||
+                                it.type.equals("Teaser", ignoreCase = true)
+                            )
+                    }
+
+                val picked = videos.maxByOrNull { video ->
+                    var score = 0
+                    if (video.type.equals("Trailer", ignoreCase = true)) score += 100
+                    if (video.official == true) score += 50
+
+                    val name = video.name.orEmpty()
+                    if (name.contains("official trailer", ignoreCase = true)) score += 30
+                    else if (name.contains("trailer", ignoreCase = true)) score += 15
+                    if (name.contains("teaser", ignoreCase = true)) score += 5
+
+                    score
+                }
+
+                val ytKey = picked?.key
+                if (ytKey.isNullOrBlank()) {
+                    Log.d(TAG, "[TRAILER] TMDB match ada tetapi trailer YouTube tidak ditemukan id=${safeMatch.id}")
+                    null
+                } else {
+                    Log.d(
+                        TAG,
+                        "[TRAILER] TMDB trailer id=${safeMatch.id} type=${picked.type} " +
+                            "official=${picked.official == true} keyHash12=${md5(ytKey).take(12)}"
+                    )
+                    "https://www.youtube.com/watch?v=$ytKey"
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "[TRAILER] TMDB resolver gagal: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
     // 3. LOAD
     override suspend fun load(url: String): LoadResponse? {
         val cleanId = when {
@@ -781,8 +898,12 @@ class MovieBoxProvider : MainAPI() {
         val yearInt = subject.releaseDate?.take(4)?.toIntOrNull()
         val ratingStr = subject.imdbRatingValue ?: subject.imdbRate
 
-        // TRAILER - sudah berfungsi, tidak diubah.
-        val trailerUrl = subject.trailer?.let { it.videoAddressUpper ?: it.videoAddressLower }?.url
+        // TRAILER ONLY:
+        // MovieBox current backend mengembalikan App Upgrade Notice untuk semua
+        // judul. Jangan gunakan subject.trailer.videoAddress sebagai fallback,
+        // karena itu menghasilkan trailer yang salah. Jika TMDB tidak punya
+        // safe match/trailer, lebih aman tidak menampilkan trailer.
+        val trailerUrl = resolveTmdbTrailer(displayTitle, yearInt, typeInt)
 
         val genreTags = subject.genre?.split(",")?.map { it.trim() } ?: emptyList()
 
@@ -846,7 +967,7 @@ class MovieBoxProvider : MainAPI() {
                 this.tags = genreTags
                 this.recommendations = recs
                 if (!trailerUrl.isNullOrBlank()) {
-                    this.trailers.add(TrailerData(trailerUrl, mainUrl, true))
+                    this.trailers.add(TrailerData(extractorUrl = trailerUrl, referer = null, raw = false))
                 }
             }
         } else {
@@ -859,7 +980,7 @@ class MovieBoxProvider : MainAPI() {
                 this.tags = genreTags
                 this.recommendations = recs
                 if (!trailerUrl.isNullOrBlank()) {
-                    this.trailers.add(TrailerData(trailerUrl, mainUrl, true))
+                    this.trailers.add(TrailerData(extractorUrl = trailerUrl, referer = null, raw = false))
                 }
             }
         }
@@ -1040,6 +1161,32 @@ class MovieBoxProvider : MainAPI() {
         val name: String?,
         val character: String?,
         val avatarUrl: String?
+    )
+
+    data class TmdbSearchResponse(
+        val results: List<TmdbSearchItem>? = null
+    )
+
+    data class TmdbSearchItem(
+        val id: Int,
+        val title: String? = null,
+        val name: String? = null,
+        @JsonProperty("original_title") val originalTitle: String? = null,
+        @JsonProperty("original_name") val originalName: String? = null,
+        @JsonProperty("release_date") val releaseDate: String? = null,
+        @JsonProperty("first_air_date") val firstAirDate: String? = null
+    )
+
+    data class TmdbVideosResponse(
+        val results: List<TmdbVideoItem>? = null
+    )
+
+    data class TmdbVideoItem(
+        val key: String? = null,
+        val site: String? = null,
+        val type: String? = null,
+        val official: Boolean? = null,
+        val name: String? = null
     )
 
     data class TrailerItem(
