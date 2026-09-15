@@ -1,8 +1,6 @@
 package com.AdiDrakor
 
-import android.util.Log                                     // [PEACHIFY]
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.AdiDrakor.AdiDrakorExtractor.invokeKisskh 
 import com.AdiDrakor.AdiDrakorExtractor.invokeMoviebox
 import com.AdiDrakor.AdiDrakorIdlix.invokeIdlix
 import com.lagradost.cloudstream3.*
@@ -15,11 +13,9 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import okhttp3.Interceptor
-import java.net.URI                                            // [PEACHIFY]
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.coroutines.cancellation.CancellationException   // [PEACHIFY]
 
 open class AdiDrakor : TmdbProvider() {
     override var name = "AdiDrakor"
@@ -30,9 +26,8 @@ open class AdiDrakor : TmdbProvider() {
 
     // [AUDIT-A1] MainAPI: "Set false if links require referer or for some reason cant be
     // played on a chromecast". Link MovieBox wajib membawa header Cookie hasil signCookie
-    // lewat getVideoInterceptor(), dan Kisskh wajib membawa Referer. Chromecast tidak
-    // memakai interceptor provider sehingga CDN membalas 403. Kembalikan ke true hanya
-    // bila nanti ada sumber yang benar-benar bisa di-cast.
+    // lewat getVideoInterceptor(). Pertahankan false selama sumber aktif masih bergantung
+    // pada header/interceptor provider.
     override val hasChromecastSupport = false
 
     // [AUDIT-A3] load() dapat mengembalikan TvType.Anime (isAnime), sedangkan supportedTypes
@@ -46,36 +41,6 @@ open class AdiDrakor : TmdbProvider() {
 
     val wpRedisInterceptor by lazy { CloudflareKiller() }
 
-    // ============================================================
-    // [PEACHIFY] PEACHIFY PLAYBACK SOURCE
-    // ============================================================
-    // Sumber tambahan, TIDAK menggantikan Moviebox/Kisskh/Idlix.
-    // Menggunakan PeachifyResolver yang identik dengan baseline
-    // Adicinemax21 yang sudah terbukti runtime-working.
-    private val peachifyResolver = PeachifyResolver(
-        sourceName = name,
-        logMarkerCallback = ::logMarker,
-        safeHostCallback = ::safeHost
-    )
-
-    private fun logMarker(message: String) {
-        Log.d("AdiDrakorPF", message)
-    }
-
-    private fun safeHost(url: String?): String {
-        if (url.isNullOrBlank()) {
-            return "-"
-        }
-
-        return try {
-            URI(url).host?.lowercase() ?: "invalid"
-        } catch (_: Exception) {
-            "invalid"
-        }
-    }
-    // ============================================================
-    // [/PEACHIFY]
-    // ============================================================
 
     companion object {
         private const val tmdbAPI = "https://api.themoviedb.org/3"
@@ -343,29 +308,30 @@ open class AdiDrakor : TmdbProvider() {
     ): Boolean {
         val res = parseJson<LinkData>(data)
         runAllAsync(
-            { invokeMoviebox(res.title ?: return@runAllAsync, res.orgTitle, res.altTitle, res.year, res.airedYear, res.season, res.episode, subtitleCallback, callback) },
-            { invokeKisskh(res.title ?: return@runAllAsync, res.orgTitle, res.altTitle, res.year, res.season, res.episode, subtitleCallback, callback) },
-            { invokeIdlix(res.title ?: return@runAllAsync, res.orgTitle, res.altTitle, res.year, res.season, res.episode, subtitleCallback, callback) },
-            // [PEACHIFY] Sumber keempat — tidak menggantikan tiga task di atas.
             {
-                val tmdbId = res.id ?: return@runAllAsync
-                try {
-                    peachifyResolver.resolveFromTmdbId(
-                        tmdbId = tmdbId,
-                        type = res.type,
-                        season = res.season,
-                        episode = res.episode,
-                        subtitleCallback = subtitleCallback,
-                        callback = callback
-                    )
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(
-                        "AdiDrakorPF",
-                        "[PEACHIFY] uncaught ${e.javaClass.simpleName}: ${e.message}"
-                    )
-                }
+                invokeMoviebox(
+                    res.title ?: return@runAllAsync,
+                    res.orgTitle,
+                    res.altTitle,
+                    res.year,
+                    res.airedYear,
+                    res.season,
+                    res.episode,
+                    subtitleCallback,
+                    callback
+                )
+            },
+            {
+                invokeIdlix(
+                    res.title ?: return@runAllAsync,
+                    res.orgTitle,
+                    res.altTitle,
+                    res.year,
+                    res.season,
+                    res.episode,
+                    subtitleCallback,
+                    callback
+                )
             }
         )
         return true
@@ -377,8 +343,8 @@ open class AdiDrakor : TmdbProvider() {
      * Stream MovieBox memakai signed cookie; tanpa interceptor ini ExoPlayer
      * tidak mengirim header Cookie ke CDN dan semua request balas 403.
      *
-     * Return null bila link tidak punya header Cookie, sehingga Kisskh sama
-     * sekali tidak terpengaruh.
+     * Return null bila link tidak punya header Cookie, sehingga sumber lain
+     * yang tidak memakai Cookie MovieBox tidak terpengaruh.
      */
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val cookie = extractorLink.headers["Cookie"]
