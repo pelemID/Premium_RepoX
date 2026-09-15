@@ -5,8 +5,8 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import com.adixtream.AdiXtreamExtractor.invokeMovieBox
-import com.adixtream.AdiXtreamExtractor.invokeAdimoviebox2
+import com.adixtream.AdiXtreamExtractor.invokeMoviebox
+import com.adixtream.AdiXtreamIdlix.invokeIdlix
 
 // PERBAIKAN 1: Data class untuk menyimpan informasi film/series dari load() ke loadLinks() secara instan
 data class XtreamLinkData(
@@ -215,14 +215,36 @@ open class AdiXtream : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // PERBAIKAN 3: Mengekstrak metadata langsung dari LoadData, menghilangkan bottleneck request TMDB di sini!
-        // Waktu loading (muter) saat klik Play akan meningkat drastis!
         val linkData = tryParseJson<XtreamLinkData>(data) ?: return false
 
         runAllAsync(
-            { invokeMovieBox(linkData.tmdbId, linkData.title, linkData.originalTitle, linkData.year, linkData.season, linkData.episode, linkData.isTvSeries, subtitleCallback, callback) },
-            { if (linkData.title.isNotEmpty()) invokeAdimoviebox2(linkData.title, linkData.year, linkData.season, linkData.episode, subtitleCallback, callback, linkData.originalTitle) }
+            {
+                invokeMoviebox(
+                    title = linkData.title,
+                    orgTitle = linkData.originalTitle,
+                    altTitle = null,
+                    year = linkData.year,
+                    airedYear = linkData.year,
+                    season = linkData.season,
+                    episode = linkData.episode,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+            },
+            {
+                invokeIdlix(
+                    title = linkData.title,
+                    orgTitle = linkData.originalTitle,
+                    altTitle = null,
+                    year = linkData.year,
+                    season = linkData.season,
+                    episode = linkData.episode,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+            }
         )
+
         return true
     }
 }
