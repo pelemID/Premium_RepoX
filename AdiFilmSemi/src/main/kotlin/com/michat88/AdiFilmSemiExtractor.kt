@@ -761,9 +761,9 @@ object AdiFilmSemiExtractor : AdiFilmSemi() {
 
                 val sessionUserId = when {
                     xUser.has("userId") && xUser.opt("userId") != JSONObject.NULL ->
-                        xUser.opt("userId").toString()
+                        xUser.opt("userId")?.toString().orEmpty()
                     xUser.has("user_id") && xUser.opt("user_id") != JSONObject.NULL ->
-                        xUser.opt("user_id").toString()
+                        xUser.opt("user_id")?.toString().orEmpty()
                     else -> ""
                 }
 
