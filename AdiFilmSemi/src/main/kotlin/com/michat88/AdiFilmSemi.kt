@@ -1,37 +1,16 @@
 package com.michat88
 
-import android.util.Log                                            // [PEACHIFY]
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.michat88.AdiFilmSemiExtractor.invokeAdiDewasa
-import com.michat88.AdiFilmSemiExtractor.invokeKisskh 
-import com.michat88.AdiFilmSemiExtractor.invokeAdimoviebox
-import com.michat88.AdiFilmSemiExtractor.invokeAdimoviebox2 
-import com.michat88.AdiFilmSemiExtractor.invokeGomovies
-import com.michat88.AdiFilmSemiExtractor.invokeIdlix
-import com.michat88.AdiFilmSemiExtractor.invokeMapple
-import com.michat88.AdiFilmSemiExtractor.invokeSuperembed
-import com.michat88.AdiFilmSemiExtractor.invokeVidfast
-import com.michat88.AdiFilmSemiExtractor.invokeVidlink
-import com.michat88.AdiFilmSemiExtractor.invokeVidsrc
-import com.michat88.AdiFilmSemiExtractor.invokeVidsrccc
-import com.michat88.AdiFilmSemiExtractor.invokeVixsrc
-import com.michat88.AdiFilmSemiExtractor.invokeWatchsomuch
-import com.michat88.AdiFilmSemiExtractor.invokeWyzie
-import com.michat88.AdiFilmSemiExtractor.invokeXprime
-import com.michat88.AdiFilmSemiExtractor.invokeCinemaOS
-import com.michat88.AdiFilmSemiExtractor.invokePlayer4U
-import com.michat88.AdiFilmSemiExtractor.invokeRiveStream
+import com.michat88.AdiFilmSemiExtractor.invokeMoviebox
+import com.michat88.AdiFilmSemiIdlix.invokeIdlix
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.metaproviders.TmdbProvider
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import java.net.URI                                            // [PEACHIFY]
-import kotlin.coroutines.cancellation.CancellationException   // [PEACHIFY]
 
 open class AdiFilmSemi : TmdbProvider() {
     override var name = "AdiFilmSemi"
@@ -45,39 +24,6 @@ open class AdiFilmSemi : TmdbProvider() {
         TvType.TvSeries,
     )
 
-    val wpRedisInterceptor by lazy { CloudflareKiller() }
-
-    // ============================================================
-    // [PEACHIFY] PEACHIFY PLAYBACK SOURCE
-    // ============================================================
-    // Sumber tambahan, TIDAK menggantikan source AdiFilmSemi yang sudah ada.
-    // Menggunakan PeachifyResolver yang identik dengan baseline Adicinemax21
-    // dan AdiDrakor yang sudah runtime-working.
-    private val peachifyResolver = PeachifyResolver(
-        sourceName = name,
-        logMarkerCallback = ::logMarker,
-        safeHostCallback = ::safeHost
-    )
-
-    private fun logMarker(message: String) {
-        Log.d("AdiFilmSemiPF", message)
-    }
-
-    private fun safeHost(url: String?): String {
-        if (url.isNullOrBlank()) {
-            return "-"
-        }
-
-        return try {
-            URI(url).host?.lowercase() ?: "invalid"
-        } catch (_: Exception) {
-            "invalid"
-        }
-    }
-    // ============================================================
-    // [/PEACHIFY]
-    // ============================================================
-
     /** AUTHOR : Hexated & AdiFilmSemi (Modified) */
     companion object {
         /** TOOLS */
@@ -88,25 +34,6 @@ open class AdiFilmSemi : TmdbProvider() {
         const val jikanAPI = "https://api.jikan.moe/v4"
 
         private const val apiKey = "b030404650f279792a8d3287232358e3"
-
-        /** ALL SOURCES */
-        const val gomoviesAPI = "https://gomovies-online.cam"
-        const val idlixAPI = "https://tv10.idlixku.com" 
-        const val vidsrcccAPI = "https://vidsrc.cc"
-        const val vidSrcAPI = "https://vidsrc.net"
-        const val xprimeAPI = "https://backend.xprime.tv"
-        const val watchSomuchAPI = "https://watchsomuch.tv"
-        const val mappleAPI = "https://mapple.uk"
-        const val vidlinkAPI = "https://vidlink.pro"
-        const val vidfastAPI = "https://vidfast.pro"
-        const val wyzieAPI = "https://sub.wyzie.ru"
-        const val vixsrcAPI = "https://vixsrc.to"
-        const val vidsrccxAPI = "https://vidsrc.cx"
-        const val superembedAPI = "https://multiembed.mov"
-        const val vidrockAPI = "https://vidrock.net"
-        const val cinemaOSApi = "https://cinemaos.tech"
-        const val Player4uApi = "https://player4u.xyz"
-        const val RiveStreamAPI = "https://rivestream.org"
 
         fun getType(t: String?): TvType = when (t) {
             "movie" -> TvType.Movie
@@ -379,155 +306,33 @@ open class AdiFilmSemi : TmdbProvider() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         val res = parseJson<LinkData>(data)
 
         runAllAsync(
             {
+                invokeMoviebox(
+                    title = res.title ?: return@runAllAsync,
+                    orgTitle = res.orgTitle,
+                    altTitle = res.jpTitle,
+                    year = res.year,
+                    airedYear = res.airedYear,
+                    season = res.season,
+                    episode = res.episode,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+            },
+            {
                 invokeIdlix(
-                    res.title,
-                    res.year,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
+                    title = res.title ?: return@runAllAsync,
+                    orgTitle = res.orgTitle,
+                    altTitle = res.jpTitle,
+                    year = if (res.season != null) (res.airedYear ?: res.year) else res.year,
+                    season = res.season,
+                    episode = res.episode,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
                 )
-            },
-            {
-                invokeAdimoviebox2(
-                    res.title ?: return@runAllAsync,
-                    res.year,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeAdiDewasa(
-                    res.title ?: return@runAllAsync,
-                    res.year,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeKisskh(
-                    res.title ?: return@runAllAsync,
-                    res.year,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeAdimoviebox(
-                    res.title ?: return@runAllAsync,
-                    res.year,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeVidlink(res.id, res.season, res.episode, callback)
-            },
-            {
-                invokeVidsrccc(
-                    res.id,
-                    res.imdbId,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeVixsrc(res.id, res.season, res.episode, callback)
-            },
-            {
-                invokeCinemaOS(
-                    res.imdbId,
-                    res.id,
-                    res.title,
-                    res.season,
-                    res.episode,
-                    res.year,
-                    callback,
-                    subtitleCallback
-                )
-            },
-            {
-                if (!res.isAnime) invokePlayer4U(
-                    res.title,
-                    res.season,
-                    res.episode,
-                    res.year,
-                    callback
-                )
-            },
-            {
-                if (!res.isAnime) invokeRiveStream(res.id, res.season, res.episode, callback)
-            },
-            {
-                invokeVidsrc(
-                    res.imdbId,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeWatchsomuch(
-                    res.imdbId,
-                    res.season,
-                    res.episode,
-                    subtitleCallback
-                )
-            },
-            {
-                invokeVidfast(res.id, res.season, res.episode, subtitleCallback, callback)
-            },
-            {
-                invokeMapple(res.id, res.season, res.episode, subtitleCallback, callback)
-            },
-            {
-                invokeWyzie(res.id, res.season, res.episode, subtitleCallback)
-            },
-            {
-                invokeSuperembed(
-                    res.id,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            // [PEACHIFY] Sumber tambahan — tidak menggantikan source existing.
-            {
-                val tmdbId = res.id ?: return@runAllAsync
-                try {
-                    peachifyResolver.resolveFromTmdbId(
-                        tmdbId = tmdbId,
-                        type = res.type,
-                        season = res.season,
-                        episode = res.episode,
-                        subtitleCallback = subtitleCallback,
-                        callback = callback
-                    )
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(
-                        "AdiFilmSemiPF",
-                        "[PEACHIFY] uncaught ${e.javaClass.simpleName}: ${e.message}"
-                    )
-                }
             }
         )
 
