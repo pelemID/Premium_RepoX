@@ -156,6 +156,11 @@ class LayarKacaProvider : MainAPI() {
                     pathParts[0].equals("iframe3", ignoreCase = true) &&
                     pathParts[1].equals("cast", ignoreCase = true)
 
+            val isCurrentHydrax =
+                pathParts.size >= 3 &&
+                    pathParts[0].equals("iframe3", ignoreCase = true) &&
+                    pathParts[1].equals("hydrax", ignoreCase = true)
+
             if (isCurrentP2p) {
                 val wrapperId = pathParts[2].takeIf { it.isNotBlank() }
                     ?: return null
@@ -263,6 +268,43 @@ class LayarKacaProvider : MainAPI() {
                 Log.d(
                     DEBUG_TAG,
                     "resolver=CAST current apiStatus=${apiResponse.code} " +
+                        "embedHost=${resolved?.let { runCatching { URI(it).host }.getOrNull() }.orEmpty()} " +
+                        "embedPath=${resolved?.let { runCatching { URI(it).path }.getOrNull() }.orEmpty()}"
+                )
+                resolved
+            } else if (isCurrentHydrax) {
+                val wrapperId = pathParts[2].takeIf { it.isNotBlank() }
+                    ?: return null
+                val wrapperOrigin = originOf(url) ?: "https://videonode.de"
+
+                Log.d(
+                    DEBUG_TAG,
+                    "resolver=Hydrax current wrapperHost=${wrapperUri.host} idLength=${wrapperId.length}"
+                )
+
+                val apiResponse = app.post(
+                    url = "$wrapperOrigin/api.php",
+                    headers = mapOf(
+                        "User-Agent" to PLAYBACK_UA,
+                        "Accept" to "*/*",
+                        "Content-Type" to "application/x-www-form-urlencoded",
+                        "Origin" to wrapperOrigin,
+                        "Referer" to url
+                    ),
+                    data = mapOf(
+                        "host" to "hydrax",
+                        "id" to wrapperId
+                    )
+                )
+
+                val embedUrl = tryParseJson<VideonodeApiResponse>(apiResponse.text)
+                    ?.embedUrl
+                    ?.takeIf { it.isNotBlank() }
+
+                val resolved = embedUrl?.let { resolveAgainst(url, it) }
+                Log.d(
+                    DEBUG_TAG,
+                    "resolver=Hydrax current apiStatus=${apiResponse.code} " +
                         "embedHost=${resolved?.let { runCatching { URI(it).host }.getOrNull() }.orEmpty()} " +
                         "embedPath=${resolved?.let { runCatching { URI(it).path }.getOrNull() }.orEmpty()}"
                 )
