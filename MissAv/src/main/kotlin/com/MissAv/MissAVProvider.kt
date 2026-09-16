@@ -30,9 +30,10 @@ class MissAvProvider : MainAPI() {
     override val mainPage = mainPageOf(
         "$mainUrl/id/release" to "Keluaran Terbaru",
         "$mainUrl/id/new" to "Baru Ditambahkan",
-        "$mainUrl/id/uncensored-leak" to "Kebocoran Tanpa Sensor",
+        "$mainUrl/id/english-subtitle" to "English Subtitle",
         "$mainUrl/id/monthly-hot" to "Paling Populer Bulan Ini",
-        "$mainUrl/id/siro" to "Koleksi Amatir SIRO"
+        "$mainUrl/id/uncensored-leak" to "Uncensored",
+        "$mainUrl/id/actresses/Amu%20Hanamiya" to "Amu"
     )
 
     // ==========================================
