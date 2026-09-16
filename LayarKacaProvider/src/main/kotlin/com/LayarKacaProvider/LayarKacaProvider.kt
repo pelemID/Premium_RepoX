@@ -121,30 +121,88 @@ class LayarKacaProvider : MainAPI() {
     }
 
     /**
-     * videonode.de/iframe3/... adalah wrapper. ID pada URL wrapper tidak boleh
-     * dipakai sebagai ID extractor; iframe aktual di dalam wrapper adalah
-     * sumber kebenaran.
+     * videonode.de/iframe3/... adalah wrapper.
+     *
+     * P2P current contract (P1B-P1E, 2026-09-16):
+     *   POST /api.php
+     *   host=p2p&id=<wrapper-id>
+     *   -> {"embedUrl":"https://playcdn.de/<opaque>?..."}
+     *
+     * Server lain belum diinvestigasi pada tahap ini, jadi untuk Turbo/Cast/
+     * Hydrax jalur static iframe lama dipertahankan byte-for-byte secara konsep.
      */
     private suspend fun resolveVideonode(url: String, pageReferer: String): String? {
         if (!hostMatches(url, "videonode.de")) return url
 
         return try {
-            Log.d(DEBUG_TAG, "resolver request wrapper=$url referer=$pageReferer")
-            val response = app.get(
-                url,
-                headers = mapOf(
-                    "User-Agent" to PLAYBACK_UA,
-                    "Accept" to "text/html,application/xhtml+xml,*/*;q=0.8",
-                    "Referer" to pageReferer
-                ) + originOf(pageReferer)?.let { mapOf("Origin" to it) }.orEmpty()
-            )
-            val rawIframe = response.document.selectFirst("iframe[src]")?.attr("src")
-            val resolved = rawIframe?.let { resolveAgainst(url, it) }
-            Log.d(
-                DEBUG_TAG,
-                "resolver status=${response.code} wrapper=$url rawIframe=${rawIframe.orEmpty()} resolvedIframe=${resolved.orEmpty()}"
-            )
-            resolved
+            val wrapperUri = URI(url)
+            val pathParts = wrapperUri.path
+                ?.trim('/')
+                ?.split('/')
+                .orEmpty()
+
+            val isCurrentP2p =
+                pathParts.size >= 3 &&
+                    pathParts[0].equals("iframe3", ignoreCase = true) &&
+                    pathParts[1].equals("p2p", ignoreCase = true)
+
+            if (isCurrentP2p) {
+                val wrapperId = pathParts[2].takeIf { it.isNotBlank() }
+                    ?: return null
+                val wrapperOrigin = originOf(url) ?: "https://videonode.de"
+
+                Log.d(
+                    DEBUG_TAG,
+                    "resolver=P2P current wrapperHost=${wrapperUri.host} idLength=${wrapperId.length}"
+                )
+
+                val apiResponse = app.post(
+                    url = "$wrapperOrigin/api.php",
+                    headers = mapOf(
+                        "User-Agent" to PLAYBACK_UA,
+                        "Accept" to "*/*",
+                        "Content-Type" to "application/x-www-form-urlencoded",
+                        "Origin" to wrapperOrigin,
+                        "Referer" to url
+                    ),
+                    data = mapOf(
+                        "host" to "p2p",
+                        "id" to wrapperId
+                    )
+                )
+
+                val embedUrl = tryParseJson<VideonodeApiResponse>(apiResponse.text)
+                    ?.embedUrl
+                    ?.takeIf { it.isNotBlank() }
+
+                val resolved = embedUrl?.let { resolveAgainst(url, it) }
+                Log.d(
+                    DEBUG_TAG,
+                    "resolver=P2P current apiStatus=${apiResponse.code} " +
+                        "embedHost=${resolved?.let { runCatching { URI(it).host }.getOrNull() }.orEmpty()} " +
+                        "embedPath=${resolved?.let { runCatching { URI(it).path }.getOrNull() }.orEmpty()}"
+                )
+                resolved
+            } else {
+                // Frozen legacy behavior for non-P2P videonode wrappers.
+                Log.d(DEBUG_TAG, "resolver request wrapper=$url referer=$pageReferer")
+                val response = app.get(
+                    url,
+                    headers = mapOf(
+                        "User-Agent" to PLAYBACK_UA,
+                        "Accept" to "text/html,application/xhtml+xml,*/*;q=0.8",
+                        "Referer" to pageReferer
+                    ) + originOf(pageReferer)?.let { mapOf("Origin" to it) }.orEmpty()
+                )
+                val rawIframe = response.document.selectFirst("iframe[src]")?.attr("src")
+                val resolved = rawIframe?.let { resolveAgainst(url, it) }
+                Log.d(
+                    DEBUG_TAG,
+                    "resolver status=${response.code} wrapper=$url " +
+                        "rawIframe=${rawIframe.orEmpty()} resolvedIframe=${resolved.orEmpty()}"
+                )
+                resolved
+            }
         } catch (e: Exception) {
             Log.e(DEBUG_TAG, "resolver failed wrapper=$url stage=videonode", e)
             null
@@ -187,6 +245,10 @@ class LayarKacaProvider : MainAPI() {
         @JsonProperty("poster") val poster: String?,
         @JsonProperty("quality") val quality: String?,
         @JsonProperty("year") val year: Int?
+    )
+
+    private data class VideonodeApiResponse(
+        @JsonProperty("embedUrl") val embedUrl: String? = null
     )
 
     // =========================================================================
@@ -523,21 +585,20 @@ class LayarKacaProvider : MainAPI() {
                     }
                 }
 
-                // Stage 6 CONFIRMED: videonode P2P resolve ke player PlayCDN,
-                // lalu challenge + verify menghasilkan fileUrl HLS absolut.
-                hostMatches(resolvedUrl, "playcdn.de") &&
-                    runCatching { URI(resolvedUrl).path == "/video.php" }.getOrDefault(false) -> {
+                // P1E CONFIRMED: current P2P tetap memakai host playcdn.de,
+                // tetapi player URL sekarang opaque (/slug?...), bukan /video.php.
+                hostMatches(resolvedUrl, "playcdn.de") -> {
                     routedPlayers++
                     Log.d(
                         DEBUG_TAG,
-                        "extractor=PlayCDN resolvedIframe=$resolvedUrl referer=$extractorReferer"
+                        "extractor=PlayCDN current resolvedPlayer=$resolvedUrl referer=$extractorReferer"
                     )
                     try {
                         PlayCdnP2PExtractor().getUrl(
                             resolvedUrl, extractorReferer, subtitleCallback, tracedCallback
                         )
                     } catch (e: Exception) {
-                        Log.e(DEBUG_TAG, "extractor=PlayCDN failed resolvedIframe=$resolvedUrl", e)
+                        Log.e(DEBUG_TAG, "extractor=PlayCDN failed resolvedPlayer=$resolvedUrl", e)
                     }
                 }
 
