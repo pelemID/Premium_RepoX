@@ -411,6 +411,78 @@ class LayarKacaProvider : MainAPI() {
         }
     }
 
+    /**
+     * Fallback khusus rekomendasi pada detail movie.
+     *
+     * Layout related-card movie LK21 tidak selalu memakai struktur
+     * `li.slider > article` yang dipakai selector lama. Parser utama
+     * `toSearchResult()` tetap diprioritaskan; fallback ini hanya dipakai
+     * untuk card terkait movie yang mempunyai struktur lebih ringan.
+     */
+    private fun toMovieRecommendation(element: Element): SearchResponse? {
+        val card = element.selectFirst("article") ?: element
+
+        // Pertahankan parser normal bila struktur card masih kompatibel.
+        toSearchResult(card)?.let { return it }
+
+        val link = card.selectFirst("a[href]")
+            ?: element.selectFirst("a[href]")
+            ?: return null
+
+        val rawHref = link.attr("href").trim()
+        if (
+            rawHref.isBlank() ||
+            rawHref.startsWith("#") ||
+            rawHref.startsWith("javascript:", ignoreCase = true)
+        ) return null
+
+        val imgElement = card.selectFirst("img") ?: element.selectFirst("img")
+
+        val rawTitle = card.selectFirst(
+            "h3.poster-title, h3, h2.entry-title, h2, div.title, span.title"
+        )?.text()?.trim()?.takeIf { it.isNotBlank() }
+            ?: link.attr("title").trim().takeIf { it.isNotBlank() }
+            ?: imgElement?.attr("alt")?.trim()?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        val rawPoster = imgElement?.attr("data-src")?.takeIf { it.isNotBlank() }
+            ?: imgElement?.attr("data-lazy-src")?.takeIf { it.isNotBlank() }
+            ?: imgElement?.attr("src")?.takeIf { it.isNotBlank() }
+
+        val href = fixUrl(rawHref)
+        val cleanTitle = getCleanTitle(rawTitle)
+        val posterUrl = fixPosterUrl(rawPoster)
+
+        val cardText = card.text()
+        val year = card.select("div.year, span.year").text().trim().toIntOrNull()
+            ?: Regex("\\b(\\d{4})\\b")
+                .find(cardText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+
+        val quality = getQualityFromString(
+            card.select("span.label, span.quality, div.quality").text()
+        )
+
+        val isSeries = card.select("span.episode").isNotEmpty()
+            || card.select("span.duration").text().contains("S.")
+
+        return if (isSeries) {
+            newTvSeriesSearchResponse(cleanTitle, href, TvType.TvSeries) {
+                this.posterUrl = posterUrl
+                this.quality = quality
+                this.year = year
+            }
+        } else {
+            newMovieSearchResponse(cleanTitle, href, TvType.Movie) {
+                this.posterUrl = posterUrl
+                this.quality = quality
+                this.year = year
+            }
+        }
+    }
+
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         val searchUrl = "https://gudangvape.com/search.php?s=$query&page=$page"
         val headers = mapOf(
@@ -541,6 +613,24 @@ class LayarKacaProvider : MainAPI() {
             }
         }
 
+        // Series tetap memakai recommendations lama byte-for-byte secara perilaku.
+        // Fallback berikut hanya aktif untuk movie (episodes kosong) dan hanya bila
+        // selector related lama tidak menghasilkan apa pun.
+        val movieRecommendations = if (episodes.isEmpty() && recommendations.isEmpty()) {
+            document.select(
+                "div.related-video li.slider, " +
+                    "div.related-video article, " +
+                    "div[class*=related] li:has(img):has(a[href]), " +
+                    "div[class*=related] article, " +
+                    "section[class*=related] li:has(img):has(a[href]), " +
+                    "section[class*=related] article"
+            )
+                .mapNotNull { toMovieRecommendation(it) }
+                .distinctBy { it.url }
+        } else {
+            recommendations
+        }
+
         // TMDB dipanggil di Load untuk Banner Background (Aman, hanya 1 request)
         var tmdbPoster: String? = null
         var tmdbBackdrop: String? = null
@@ -581,7 +671,7 @@ class LayarKacaProvider : MainAPI() {
                 this.backgroundPosterUrl = tmdbBackdrop ?: tmdbPoster ?: fallbackPoster
                 this.plot = plot; this.year = year
                 this.score = Score.from(ratingScore, 10)
-                this.tags = tags; this.actors = actors; this.recommendations = recommendations
+                this.tags = tags; this.actors = actors; this.recommendations = movieRecommendations
                 if (!finalTrailerUrl.isNullOrEmpty())
                     this.trailers.add(TrailerData(extractorUrl = finalTrailerUrl, referer = null, raw = false))
             }
