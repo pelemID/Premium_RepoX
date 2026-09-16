@@ -3,6 +3,6 @@
   "description": "CloudStream Premium Repository",
   "manifestVersion": 1,
   "pluginLists": [
-    "https://raw.githubusercontent.com/trinityzanetamanu-code/Premium_RepoX/builds/plugins.json"
+    "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/plugins.json"
   ]
 }
