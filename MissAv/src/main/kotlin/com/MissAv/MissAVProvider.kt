@@ -28,10 +28,9 @@ class MissAvProvider : MainAPI() {
     // DAFTAR KATEGORI (Otomatis dibuatkan Tab/Baris oleh CloudStream)
     // ==========================================
     override val mainPage = mainPageOf(
-        "$mainUrl/id/release" to "Keluaran Terbaru",
         "$mainUrl/id/new" to "Baru Ditambahkan",
-        "$mainUrl/id/english-subtitle" to "English Subtitle",
         "$mainUrl/id/monthly-hot" to "Paling Populer Bulan Ini",
+        "$mainUrl/id/english-subtitle" to "English Subtitle",
         "$mainUrl/id/uncensored-leak" to "Uncensored",
         "$mainUrl/id/actresses/Amu%20Hanamiya" to "Amu"
     )
@@ -107,7 +106,13 @@ class MissAvProvider : MainAPI() {
         val title = document.selectFirst("meta[property=og:title]")?.attr("content") ?: return null
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
-        val tags = document.select("a[href*=/genres/], a[href*=/actresses/]").map { it.text().trim() }
+//        val tags = document.select("a[href*=/genres/], a[href*=/actresses/]").map { it.text().trim() }
+
+        val tags = document.select("div").firstOrNull {
+                        it.selectFirst("span")?.text()?.trim() == "Genre:"
+                    }?.select("a")?.map {
+                        it.text().trim()
+                        } ?: emptyList()
 
         val recUrls = document.select("a[href*=/genres/], a[href*=/actresses/]")
             .mapNotNull { it.attr("href") }
