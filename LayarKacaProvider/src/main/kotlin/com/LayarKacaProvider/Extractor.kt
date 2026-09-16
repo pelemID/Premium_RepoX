@@ -473,12 +473,7 @@ object HydraxProxy {
                 return
             }
 
-            val body = response.body
-            if (body == null) {
-                Log.w("HydraxProxy", "[$clientId] [!] Body response dari Hydrax null!")
-                return
-            }
-            val inputStream = body.byteStream()
+            val inputStream = response.body.byteStream()
 
             val keyBytes = keyHex.toByteArray(Charsets.UTF_8)
             val secretKey = SecretKeySpec(keyBytes, "AES")
@@ -818,7 +813,7 @@ open class PlayCdnP2PExtractor : ExtractorApi() {
                     throw IllegalStateException("player HTTP ${response.code}")
                 }
                 // Consume body so cookies/session behavior matches a normal page load.
-                response.body?.string()
+                response.body.string()
                 response.request.url.toString()
             }
 
@@ -853,7 +848,7 @@ open class PlayCdnP2PExtractor : ExtractorApi() {
                     throw IllegalStateException("verify HTTP ${response.code}")
                 }
                 response.code to jsonMapper.readValue(
-                    response.body?.string().orEmpty(),
+                    response.body.string(),
                     PlayCdnVerifyResponse::class.java
                 )
             }
