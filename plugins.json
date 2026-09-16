@@ -8,7 +8,7 @@
         "authors": [
             "aldry84"
         ],
-        "fileSize": 123338,
+        "fileSize": 123304,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -18,7 +18,7 @@
         ],
         "iconUrl": "https://raw.githubusercontent.com/michat88/Zaneta/aa97004f4d1d74ed69245e56da2c6ad3293b6106/Icons/Adi.png",
         "apiVersion": 1,
-        "fileHash": "sha256-240d1b35a2081949300001bcbdaa9f790fc723271cfeb6f41c49683f9f17d65a"
+        "fileHash": "sha256-087511c3be69a7690ace9cd489f40bd2794897fde8c9cb5fd4fc57b3c0fa9072"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/AdiDrakor.cs3",
@@ -54,9 +54,7 @@
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
-            "AsianDrama",
-            "TvSeries",
-            "Movie"
+            "NSFW"
         ],
         "iconUrl": "https://klikxxi.me/wp-content/uploads/2024/02/cropped-site-icon.png",
         "apiVersion": 1,
@@ -105,112 +103,6 @@
         "fileHash": "sha256-bc336aae0961fa7ebdf5fb5656e8190e8db1244cac88839a3b77f1119736a48a"
     },
     {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Cinemacity.cs3",
-        "status": 1,
-        "version": 17,
-        "name": "Cinemacity",
-        "internalName": "Cinemacity",
-        "authors": [
-            "aldry84"
-        ],
-        "fileSize": 36788,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "AsianDrama",
-            "TvSeries",
-            "Movie"
-        ],
-        "iconUrl": "https://raw.githubusercontent.com/michat88/Zaneta/aa97004f4d1d74ed69245e56da2c6ad3293b6106/Icons/Adi.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-047192adeca60b1187f07d8b24c1791e7afd789b998aefd0058888e731c3d2d7"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/DramaBox.cs3",
-        "status": 1,
-        "version": 34,
-        "name": "DramaBox",
-        "internalName": "DramaBox",
-        "authors": [
-            "AdiManu"
-        ],
-        "fileSize": 33746,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "TvSeries",
-            "Movie",
-            "Anime",
-            "AsianDrama"
-        ],
-        "iconUrl": "https://www.dramabox.com/images/logo.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-9a445c8c75795fa10ba5e76bccedd1ccb22b66bd5cc26c27727a51c6cff6cc1c"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Eporner.cs3",
-        "status": 1,
-        "version": 13,
-        "name": "Eporner",
-        "internalName": "Eporner",
-        "authors": [
-            "AdiManu"
-        ],
-        "description": "Eporner",
-        "fileSize": 15064,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "en",
-        "tvTypes": [
-            "NSFW"
-        ],
-        "iconUrl": "https://raw.githubusercontent.com/phisher98/TVVVV/main/eporner.ico",
-        "apiVersion": 1,
-        "fileHash": "sha256-505a51976a40efc73c4c7faf3599fb6b34edbfec781ed80dea5ad8a4c90d4cc8"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/FourKHDHub.cs3",
-        "status": 1,
-        "version": 14,
-        "name": "FourKHDHub",
-        "internalName": "FourKHDHub",
-        "authors": [
-            "aldry84"
-        ],
-        "fileSize": 39935,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "AsianDrama",
-            "TvSeries",
-            "Movie"
-        ],
-        "iconUrl": "https://www.google.com/s2/favicons?domain=4khdhub.one&sz=256",
-        "apiVersion": 1,
-        "fileHash": "sha256-dbc1215b0337fd427bae17410c0b7c44fd0cdf6bc9409334cc661adf384af440"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/FreeReels.cs3",
-        "status": 1,
-        "version": 31,
-        "name": "FreeReels",
-        "internalName": "FreeReels",
-        "authors": [
-            "AdiManu"
-        ],
-        "fileSize": 37709,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "TvSeries",
-            "Movie",
-            "Anime",
-            "AsianDrama"
-        ],
-        "iconUrl": "https://free-reels.com/free-reels.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-0887624b849c5f175141665eafb1fe74418184eb0b6f119e98c263c5e0a1fb84"
-    },
-    {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/IdlixProvider.cs3",
         "status": 1,
         "version": 8,
@@ -242,7 +134,7 @@
             "aldry84"
         ],
         "description": "Jangan Coli Yaa",
-        "fileSize": 21277,
+        "fileSize": 21191,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -250,26 +142,7 @@
         ],
         "iconUrl": "https://homecookingrocks.com/wp-content/uploads/2024/10/cropped-indomax21-favicon-color-1.png",
         "apiVersion": 1,
-        "fileHash": "sha256-a2dd608238bed0e79630dc0ba34395fb5ea1da5e5c32089ff7df1724c93ea831"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/IndoTV.cs3",
-        "status": 1,
-        "version": 35,
-        "name": "IndoTV",
-        "internalName": "IndoTV",
-        "authors": [
-            "AdiManu"
-        ],
-        "fileSize": 15052,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "Live"
-        ],
-        "iconUrl": "https://www.dramabox.com/images/logo.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-6ee79f2923b8c492935eecf68e4aef722c89e53eb5244a347a37144ebed1bd26"
+        "fileHash": "sha256-554cd323cafb3b08602fcffd45e3fc3262cd45199997b540843d3b0abfd4a329"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/JavHey.cs3",
@@ -312,27 +185,6 @@
         "fileHash": "sha256-a16b119f63810bcb0a5597683a2c669096f2b40644d51b1ca41f3a5e1da7d966"
     },
     {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/JuraganFilm.cs3",
-        "status": 1,
-        "version": 6,
-        "name": "JuraganFilm",
-        "internalName": "JuraganFilm",
-        "authors": [
-            "aldry84"
-        ],
-        "fileSize": 23379,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "AsianDrama",
-            "TvSeries",
-            "Movie"
-        ],
-        "iconUrl": "https://tv44.juragan.film/wp-content/uploads/2019/05/faviconjf-60x60.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-e82599077cc4a04ecb1b0915d41ddc40d3989064d10c9170e1b4c386a70cd9f8"
-    },
-    {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/KisskhProvider.cs3",
         "status": 1,
         "version": 17,
@@ -359,15 +211,15 @@
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/KlikXXI.cs3",
-        "status": 1,
+        "status": 3,
         "version": 7,
         "name": "KlikXXI",
         "internalName": "KlikXXI",
         "authors": [
             "aldry84"
         ],
-        "description": "request @ian_hiro",
-        "fileSize": 33793,
+        "description": "fix on progress",
+        "fileSize": 33798,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -377,7 +229,7 @@
         ],
         "iconUrl": "https://klikxxi.me/wp-content/uploads/2024/02/cropped-site-icon-60x60.png",
         "apiVersion": 1,
-        "fileHash": "sha256-c452224dfc6e5862a9feabb21e2b707b5fe02ceb6f5a80520eda73e6655c802d"
+        "fileHash": "sha256-ac936564dec7be5ea04fc259be93611c8221e1abc4480e8229aca0edce5cad9a"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/LayarKacaProvider.cs3",
@@ -388,7 +240,7 @@
         "authors": [
             "aldry84"
         ],
-        "fileSize": 112543,
+        "fileSize": 112519,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -398,27 +250,7 @@
         ],
         "iconUrl": "https://assets.lk21.party/favicons/apple-icon-144x144.png",
         "apiVersion": 1,
-        "fileHash": "sha256-1f29a42b1e32ad7fecfdabe0931633ead792ff57d1907a48b8c570f5385d4009"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Mangoporn.cs3",
-        "status": 1,
-        "version": 4,
-        "name": "Mangoporn",
-        "internalName": "Mangoporn",
-        "authors": [
-            "AmanHnB"
-        ],
-        "description": "MangoPorn",
-        "fileSize": 19009,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "en",
-        "tvTypes": [
-            "NSFW"
-        ],
-        "iconUrl": "http://mangoporn.net/wp-content/uploads/2024/07/mangoporn.net_.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-b75817b51e54c684e2104bf0a2202a35e6a55bad697d717a76c3f431a967c7b7"
+        "fileHash": "sha256-1774442bb1b55c2508fb3aabff458278a5db9865cd5711e97411aab740531920"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/MissAv.cs3",
@@ -430,7 +262,7 @@
             "aldey84"
         ],
         "description": "Best Japan AV porn site, free forever, high speed, no lag, over 100,000 videos, daily update, no ads while playing video.",
-        "fileSize": 17640,
+        "fileSize": 17802,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "en",
         "tvTypes": [
@@ -438,7 +270,7 @@
         ],
         "iconUrl": "https://missav.ws/missav/logo-square.png",
         "apiVersion": 1,
-        "fileHash": "sha256-159644d126da848f86745a42e5d836945d76409157186532cc6ad6e006c728d7"
+        "fileHash": "sha256-10765fc5ef8842ac74dacd23a3b6091ed2722439e72d8ce98ffc0fad0e968de2"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Moviebox.cs3",
@@ -449,7 +281,7 @@
         "authors": [
             "aldry84"
         ],
-        "fileSize": 62870,
+        "fileSize": 63478,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -459,7 +291,7 @@
         ],
         "iconUrl": "https://moviebox.ph/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-64224bca40d7e6299a3ee6074356a94517af90fdd41361cc80c9f211d05e3965"
+        "fileHash": "sha256-dd74fff576e402042d6408e017529e369765375722d0b3b356571e9aab80c4fc"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/NgeFilm.cs3",
@@ -470,7 +302,7 @@
         "authors": [
             "aldry84"
         ],
-        "fileSize": 26129,
+        "fileSize": 26125,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -480,7 +312,7 @@
         ],
         "iconUrl": "https://new31.ngefilm.site/wp-content/uploads/2023/08/cropped-imageedit_8_4481000408-60x60.png",
         "apiVersion": 1,
-        "fileHash": "sha256-95837ab0178453b9cfaff606a8aa0d281ec4e720db8905713d116b200d05ebf2"
+        "fileHash": "sha256-6ac572a09b8effd988c6da6fac9a96b3e1b0581783140288e74e6734f57de607"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/OppaDrama.cs3",
@@ -492,7 +324,7 @@
             "Aldry84"
         ],
         "description": "OppaDrama \u2014 Streaming Drama Korea, Movie and TV Series",
-        "fileSize": 84712,
+        "fileSize": 84713,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -502,7 +334,7 @@
         ],
         "iconUrl": "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://oppa.biz&size=128",
         "apiVersion": 1,
-        "fileHash": "sha256-3379c8c0187d28be06b50b34112c185e02457d0a6d7fc8eb44e4ec37285a0735"
+        "fileHash": "sha256-edffb6828971d5ac7c975d807f317b0664f18beeda09f28cc401676feb3bb949"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/PODJAV.cs3",
@@ -525,35 +357,16 @@
         "fileHash": "sha256-6d6c603f1d55d46e821a08187f6603108b1a77700c2b3e0b01ecf17291650843"
     },
     {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Pornhub.cs3",
-        "status": 1,
-        "version": 10,
-        "name": "Pornhub",
-        "internalName": "Pornhub",
-        "authors": [
-            "aldey84"
-        ],
-        "description": "Awas Jangan Coli Kawan",
-        "fileSize": 18254,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "en",
-        "tvTypes": [
-            "NSFW"
-        ],
-        "iconUrl": "https://www.pornhub.com/favicon.ico",
-        "apiVersion": 1,
-        "fileHash": "sha256-2fe968c58253293ed8c3a996550b8c662a94c479bab04a80122e142d5f905a1c"
-    },
-    {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Rebahin.cs3",
-        "status": 1,
+        "status": 3,
         "version": 7,
         "name": "Rebahin",
         "internalName": "Rebahin",
         "authors": [
             "aldry84"
         ],
-        "fileSize": 24008,
+        "description": "Need provider monster fix",
+        "fileSize": 24010,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -563,29 +376,7 @@
         ],
         "iconUrl": "https://rebahinxxi3.autos/wp-content/uploads/2024/03/cropped-rebahinicon-192x192.jpg",
         "apiVersion": 1,
-        "fileHash": "sha256-10ce1413f95bf892502ea43f0880f63dec217bcc38790f91f1000102e81a9ed1"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/ReelShort.cs3",
-        "status": 1,
-        "version": 1,
-        "name": "ReelShort",
-        "internalName": "ReelShort",
-        "authors": [
-            "AdiManu"
-        ],
-        "fileSize": 26439,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "id",
-        "tvTypes": [
-            "TvSeries",
-            "Movie",
-            "Anime",
-            "AsianDrama"
-        ],
-        "iconUrl": "https://v-mps.crazymaplestudios.com/images/211d3420-d721-11f0-84ad-6b5693b490dc.png",
-        "apiVersion": 1,
-        "fileHash": "sha256-444ef7a1e5443cd1a5c3e367622c2557069fdf2d0f65784320bdad904aa5cbdb"
+        "fileHash": "sha256-c3d2159077f37725db77db76405244a07eae694f444bd2ce78ac773a9d2fd98a"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/RiveStream.cs3",
@@ -617,7 +408,7 @@
         "authors": [
             "AdiManu"
         ],
-        "fileSize": 35718,
+        "fileSize": 35693,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -628,7 +419,7 @@
         ],
         "iconUrl": "https://sflix.film/favicon.ico",
         "apiVersion": 1,
-        "fileHash": "sha256-65bf9150c55bee98027ee56c2dca12c70f9464f81b53d2ed4a5d964d61211c85"
+        "fileHash": "sha256-287b6f5768c5af854823bfe3a91c4f854001f5cf0645f5bc1392e8db15319587"
     },
     {
         "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/streamzy.cs3",
@@ -639,7 +430,7 @@
         "authors": [
             "aldry84"
         ],
-        "fileSize": 87740,
+        "fileSize": 87584,
         "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
         "language": "id",
         "tvTypes": [
@@ -649,26 +440,6 @@
         ],
         "iconUrl": "https://raw.githubusercontent.com/michat88/Zaneta/aa97004f4d1d74ed69245e56da2c6ad3293b6106/Icons/Adi.png",
         "apiVersion": 1,
-        "fileHash": "sha256-afabbcf938d057c4dee46dd1e1ef7ce251a777c3cadce0eb184e8d15b88ebe20"
-    },
-    {
-        "url": "https://raw.githubusercontent.com/pelemID/Premium_RepoX/builds/Xhamster.cs3",
-        "status": 1,
-        "version": 9,
-        "name": "Xhamster",
-        "internalName": "Xhamster",
-        "authors": [
-            "aldey84"
-        ],
-        "description": "Awas Jangan Coli Kawan",
-        "fileSize": 16010,
-        "repositoryUrl": "https://github.com/pelemID/Premium_RepoX",
-        "language": "en",
-        "tvTypes": [
-            "NSFW"
-        ],
-        "iconUrl": "https://static.xhpingcdn.com/xh-mobile/images/favicon/favicon-v2-512x512.png?v=1",
-        "apiVersion": 1,
-        "fileHash": "sha256-4462f4714b9112d6b55701ddfb82f014cf5c67dbf0a7b13ac83feb13765cf13d"
+        "fileHash": "sha256-ab462b7bd8e7257430c3ba79af7717f60e1c0420dab393676e504d3ce0c0f962"
     }
 ]
