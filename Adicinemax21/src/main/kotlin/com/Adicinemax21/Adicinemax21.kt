@@ -1,8 +1,6 @@
 package com.Adicinemax21
 
-import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.Adicinemax21.Adicinemax21Extractor.invokeKisskh 
 import com.Adicinemax21.Adicinemax21Extractor.invokeMoviebox
 import com.Adicinemax21.Adicinemax21Idlix.invokeIdlix
 import com.lagradost.cloudstream3.*
@@ -15,8 +13,6 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import okhttp3.Interceptor
-import java.net.URI
-import kotlin.coroutines.cancellation.CancellationException
 
 open class Adicinemax21 : TmdbProvider() {
     override var name = "Adicinemax21"
@@ -27,9 +23,8 @@ open class Adicinemax21 : TmdbProvider() {
 
     // [AUDIT-A1] MainAPI: "Set false if links require referer or for some reason cant be
     // played on a chromecast". Link MovieBox wajib membawa header Cookie hasil signCookie
-    // lewat getVideoInterceptor(), dan Kisskh wajib membawa Referer. Chromecast tidak
-    // memakai interceptor provider sehingga CDN membalas 403. Kembalikan ke true hanya
-    // bila nanti ada sumber yang benar-benar bisa di-cast.
+    // lewat getVideoInterceptor(). Pertahankan false selama sumber aktif masih bergantung
+    // pada header/interceptor provider.
     override val hasChromecastSupport = false
 
     // [AUDIT-A3] load() dapat mengembalikan TvType.Anime (isAnime), sedangkan supportedTypes
@@ -42,40 +37,6 @@ open class Adicinemax21 : TmdbProvider() {
     )
 
     val wpRedisInterceptor by lazy { CloudflareKiller() }
-
-    // ============================================================
-    // PEACHIFY PLAYBACK SOURCE (ported from Streamzy)
-    // ============================================================
-    // Sumber tambahan, TIDAK menggantikan Moviebox/Kisskh/Idlix.
-    // Hanya menerima data yang sudah tersedia di LinkData
-    // (id=TMDB, type, season, episode) dan membangun embed URL
-    // Peachify secara deterministik — tidak meniru halaman /watch.
-    //
-    // Semua logika internal Peachify (API air/holly, filter HLS,
-    // label grouping, dedup URL, subtitle + deteksi Indonesia,
-    // error handling, CancellationException rethrow) identik
-    // dengan baseline Streamzy.
-    private val peachifyResolver = PeachifyResolver(
-        sourceName = name,
-        logMarkerCallback = ::logMarker,
-        safeHostCallback = ::safeHost
-    )
-
-    private fun logMarker(message: String) {
-        Log.d("Adicinemax21PF", message)
-    }
-
-    private fun safeHost(url: String?): String {
-        if (url.isNullOrBlank()) {
-            return "-"
-        }
-
-        return try {
-            URI(url).host?.lowercase() ?: "invalid"
-        } catch (_: Exception) {
-            "invalid"
-        }
-    }
 
     companion object {
         private const val tmdbAPI = "https://api.themoviedb.org/3"
@@ -354,28 +315,30 @@ open class Adicinemax21 : TmdbProvider() {
     ): Boolean {
         val res = parseJson<LinkData>(data)
         runAllAsync(
-            { invokeMoviebox(res.title ?: return@runAllAsync, res.orgTitle, res.altTitle, res.year, res.airedYear, res.season, res.episode, subtitleCallback, callback) },
-            { invokeKisskh(res.title ?: return@runAllAsync, res.orgTitle, res.altTitle, res.year, res.season, res.episode, subtitleCallback, callback) },
-            { invokeIdlix(res.title ?: return@runAllAsync, res.orgTitle, res.altTitle, res.year, res.season, res.episode, subtitleCallback, callback) },
             {
-                val tmdbId = res.id ?: return@runAllAsync
-                try {
-                    peachifyResolver.resolveFromTmdbId(
-                        tmdbId = tmdbId,
-                        type = res.type,
-                        season = res.season,
-                        episode = res.episode,
-                        subtitleCallback = subtitleCallback,
-                        callback = callback
-                    )
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e(
-                        "Adicinemax21PF",
-                        "[PEACHIFY] uncaught ${e.javaClass.simpleName}: ${e.message}"
-                    )
-                }
+                invokeMoviebox(
+                    res.title ?: return@runAllAsync,
+                    res.orgTitle,
+                    res.altTitle,
+                    res.year,
+                    res.airedYear,
+                    res.season,
+                    res.episode,
+                    subtitleCallback,
+                    callback
+                )
+            },
+            {
+                invokeIdlix(
+                    res.title ?: return@runAllAsync,
+                    res.orgTitle,
+                    res.altTitle,
+                    res.year,
+                    res.season,
+                    res.episode,
+                    subtitleCallback,
+                    callback
+                )
             }
         )
         return true
@@ -387,8 +350,8 @@ open class Adicinemax21 : TmdbProvider() {
      * Stream MovieBox memakai signed cookie; tanpa interceptor ini ExoPlayer
      * tidak mengirim header Cookie ke CDN dan semua request balas 403.
      *
-     * Return null bila link tidak punya header Cookie, sehingga Kisskh sama
-     * sekali tidak terpengaruh.
+     * Return null bila link tidak punya header Cookie, sehingga sumber lain
+     * yang tidak memakai Cookie MovieBox tidak terpengaruh.
      */
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         val cookie = extractorLink.headers["Cookie"]
