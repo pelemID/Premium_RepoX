@@ -11,20 +11,18 @@ import javax.crypto.spec.SecretKeySpec
 
 class HomeCookingRocks : MainAPI() {
     
-    override var name = "Home Cooking Rocks"
+    override var name = "Indomax21"
     override var mainUrl = "https://stspirit.com"
     override var supportedTypes = setOf(TvType.NSFW) 
     override var lang = "id"
     override val hasMainPage = true
     
     override val mainPage = mainPageOf(
-        "$mainUrl/category/asia-m/" to "Asia",
+        "$mainUrl/category/kelas-bintang/" to "Kelas Bintang",
+        "$mainUrl/category/bokep-indo/" to "Indo Punya",
         "$mainUrl/category/vivamax/" to "VivaMax",
         "$mainUrl/category/jav/" to "JAV",
-        "$mainUrl/category/kelas-bintang/" to "Kelas Bintang",
-        "$mainUrl/category/semi-barat/" to "Barat Punya",
-        "$mainUrl/category/bokep-indo/" to "Indo Punya",
-        "$mainUrl/category/bokep-vietnam/" to "Vietnam Punya"
+        "$mainUrl/category/asia-m/" to "Asia"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
