@@ -5,6 +5,7 @@ rootProject.name = "CloudstreamPlugins"
 val disabled = listOf(
     "Cinemacity",
     "FourKHDHub",
+    "IndoTV",
     "DramaBox",
     "Eporner",
     "FreeReels",
