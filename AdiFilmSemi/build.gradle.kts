@@ -17,12 +17,7 @@ cloudstream {
      * 3: Beta only
      * */
     status = 1 // will be 3 if unspecified
-    tvTypes = listOf(
-        "NSFW"
-        "AsianDrama",
-        "TvSeries",
-        "Movie",
-    )
+    tvTypes = listOf("NSFW")
 
 
     iconUrl = "https://klikxxi.me/wp-content/uploads/2024/02/cropped-site-icon.png"
