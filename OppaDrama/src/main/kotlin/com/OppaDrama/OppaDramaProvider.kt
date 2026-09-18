@@ -30,7 +30,7 @@ data class MovieVersionData(
 
 class OppaDramaProvider : MainAPI() {
     override var mainUrl = "http://45.11.57.192"
-    override var name = "OPPADRAMA"
+    override var name = "OppaDrama"
     override var lang = "id"
     
     override val supportedTypes = setOf(
