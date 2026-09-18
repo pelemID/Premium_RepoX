@@ -5,12 +5,12 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - master
-      - main
-    paths-ignore:
-      - '*.md'
+#  push:
+#    branches:
+#      - master
+#      - main
+#    paths-ignore:
+#      - '*.md'
   workflow_dispatch:
 
 permissions:
