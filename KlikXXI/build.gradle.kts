@@ -6,7 +6,7 @@ cloudstream {
     language = "id"
     // All of these properties are optional, you can safely remove them
 
-    description = "request @ian_hiro"
+    description = "fix on progress"
     authors = listOf("aldry84")
 
     /**
