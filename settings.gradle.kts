@@ -6,6 +6,7 @@ val disabled = listOf(
     "Cinemacity",
     "FourKHDHub",
     "IndoTV",
+    "JuraganFilm",
     "DramaBox",
     "Eporner",
     "FreeReels",
