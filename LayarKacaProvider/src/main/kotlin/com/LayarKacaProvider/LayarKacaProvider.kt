@@ -30,15 +30,17 @@ class LayarKacaProvider : MainAPI() {
     // =========================================================================
     override val mainPage = mainPageOf(
         "latest/" to "Film Terbaru",
-        "top-series-today/" to "Series Unggulan",
-        "latest-series/" to "Series Update",
         "populer/" to "Top Bulan Ini",
         "nonton-bareng-keluarga/" to "Nonton Bareng Keluarga",
+        "rekomendasi-film-pintar/" to "Rekomendasi",        
+        "top-series-today/" to "Series Unggulan",
+        "latest-series/" to "Series Update",
         "genre/action/" to "Action Terbaru",
-        "genre/romance/" to "Romance Terbaru",
+//        "genre/romance/" to "Romance Terbaru",
         "genre/comedy/" to "Comedy Terbaru",
         "genre/horror/" to "Horror Terbaru",
         "country/south-korea/" to "Korea Terbaru",
+        "country/japan/" to "Jepang Terbaru",
         "country/thailand/" to "Thailand Terbaru",
         "country/india/" to "India Terbaru"
     )
