@@ -32,7 +32,7 @@ class LayarKacaProvider : MainAPI() {
         "latest/" to "Film Terbaru",
         "populer/" to "Top Bulan Ini",
         "nonton-bareng-keluarga/" to "Nonton Bareng Keluarga",
-        "rekomendasi-film-pintar/" to "Rekomendasi",        
+//        "rekomendasi-film-pintar/" to "Rekomendasi",        
         "top-series-today/" to "Series Unggulan",
         "latest-series/" to "Series Update",
         "genre/action/" to "Action Terbaru",
