@@ -39,9 +39,11 @@ class Ngefilm21 : MainAPI() {
         Pair("Indonesia Movie", "/country/indonesia"),
         Pair("Indonesia Series", "/?s=&search=advanced&post_type=tv&index=&orderby=&genre=&movieyear=&country=indonesia&quality="),
         Pair("Drakor", "/?s=&search=advanced&post_type=tv&index=&orderby=&genre=drama&movieyear=&country=korea&quality="),
-        Pair("VivaMax", "/country/philippines"),
-        Pair("Movies", "/country/canada"),
-        Pair("Ahok Movie", "/country/china")
+//        Pair("VivaMax", "/country/philippines"),
+        Pair("Movies", "/country/usa"),
+        Pair("Movies", "/country/korea"),
+        Pair("Movies", "/country/japan"),
+        Pair("China", "/country/china")
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
