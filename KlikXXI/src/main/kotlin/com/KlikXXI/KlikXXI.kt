@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class KlikXXI : MainAPI() {
-    override var mainUrl = "https://klikxxi.me"
+    override var mainUrl = "https://klikxxi.shop"
     override var name    = "KlikXXI"
     override val hasMainPage       = true
     override var lang              = "id"
