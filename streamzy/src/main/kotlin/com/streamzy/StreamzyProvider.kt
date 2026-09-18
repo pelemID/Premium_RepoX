@@ -74,16 +74,16 @@ class StreamzyProvider(
     // ============================================================
 
     override val mainPage = mainPageOf(
-        "$mainUrl/movies" to "Popular Movies",
-        "$mainUrl/tv" to "Popular TV Shows",
+//        "$mainUrl/movies" to "Popular Movies",
+//        "$mainUrl/tv" to "Popular TV Shows",
 
         "$mainUrl/trending" to "Trending",
 
         "$mainUrl/new-releases" to "New Movies",
         "$mainUrl/new-releases?type=tv" to "New TV Shows",
 
-        "$mainUrl/top-rated" to "Top Rated Movies",
-        "$mainUrl/top-rated?type=tv" to "Top Rated TV Shows",
+//        "$mainUrl/top-rated" to "Top Rated Movies",
+//        "$mainUrl/top-rated?type=tv" to "Top Rated TV Shows",
 
         "$mainUrl/now-playing" to "Now Playing",
         "$mainUrl/upcoming" to "Upcoming Movies",
