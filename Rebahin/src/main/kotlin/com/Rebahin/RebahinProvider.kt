@@ -7,7 +7,8 @@ import com.lagradost.cloudstream3.mvvm.logError
 import org.jsoup.nodes.Element
 
 class RebahinProvider : MainAPI() {
-    override var mainUrl = "https://rebahinxxi3.boats"
+//    override var mainUrl = "https://rebahinxxi3.boats"
+    override var mainUrl = "https://rebahinxxi3.mom"
     override var name = "Rebahin"
     override val hasMainPage = true
     override var lang = "id"
