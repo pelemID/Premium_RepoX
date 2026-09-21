@@ -512,9 +512,11 @@ class MovieBoxProvider : MainAPI() {
 
             val sessionUserId = when {
                 xUser.has("userId") && xUser.opt("userId") != JSONObject.NULL ->
-                    xUser.opt("userId").toString()
+//                    xUser.opt("userId").toString()
+                    xUser.opt("userId")?.toString() ?: ""
                 xUser.has("user_id") && xUser.opt("user_id") != JSONObject.NULL ->
-                    xUser.opt("user_id").toString()
+//                    xUser.opt("user_id").toString()
+                    xUser.opt("user_id")?.toString() ?: ""
                 else -> ""
             }
 
@@ -1030,7 +1032,8 @@ class MovieBoxProvider : MainAPI() {
                 val label = c.optString("lanName", "").ifBlank {
                     c.optString("lan", "").ifBlank { "Unknown" }
                 }
-                subtitleCallback(SubtitleFile(label, url))
+//                subtitleCallback(SubtitleFile(label, url))
+                subtitleCallback(newSubtitleFile(label, url))
                 sent++
             }
             Log.d(TAG, "[SUBTITLE] extCaptions=${caps?.length() ?: 0} sent=$sent")
@@ -1088,7 +1091,8 @@ class MovieBoxProvider : MainAPI() {
             val playData = response.parsedSafe<PlayInfoResponse>()
             val stream = playData?.data?.streams?.firstOrNull()
 
-            if (!stream?.url.isNullOrBlank() && !stream?.signCookie.isNullOrBlank()) {
+//            if (!stream?.url.isNullOrBlank() && !stream?.signCookie.isNullOrBlank()) {
+            if (!stream.url.isNullOrBlank() && !stream.signCookie.isNullOrBlank()) {
                 foundStream = stream
                 break
             }
