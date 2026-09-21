@@ -8,6 +8,7 @@ val disabled = listOf(
     "IndoTV",
     "JuraganFilm",
     "DramaBox",
+    "Mangoporn",
     "Eporner",
     "FreeReels",
     "Pornhub",
