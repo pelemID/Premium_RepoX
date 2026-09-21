@@ -69,8 +69,8 @@ class MovieBoxProvider : MainAPI() {
         private val SEED_CATEGORIES = listOf(
             "4809349160627587984" to "Semua",
             "4380734070238626200" to "K-Drama",
-            "5283462032510044280" to "Indo Drama",
-            "8617025562613270856" to "Anime",
+            "7749480172839487888" to "Indo Comedy",
+            "7132534597631837112" to "Animated Movie",
             "5307082080063488480" to "Barat",
             "8624142774394406504" to "C-Drama",
             "1164329479448281992" to "Thai-Drama",
