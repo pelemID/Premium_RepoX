@@ -1092,9 +1092,16 @@ class MovieBoxProvider : MainAPI() {
             val stream = playData?.data?.streams?.firstOrNull()
 
 //            if (!stream?.url.isNullOrBlank() && !stream?.signCookie.isNullOrBlank()) {
-            if (!stream.url.isNullOrBlank() && !stream.signCookie.isNullOrBlank()) {
+//            if (!stream.url.isNullOrBlank() && !stream.signCookie.isNullOrBlank()) {
+//                foundStream = stream
+//                break
+/            }
+
+            if (stream != null &&
+                !stream.url.isNullOrBlank() &&
+                !stream.signCookie.isNullOrBlank()) {
                 foundStream = stream
-                break
+            break
             }
         }
 
