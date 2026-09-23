@@ -67,12 +67,12 @@ class MovieBoxProvider : MainAPI() {
         private const val CAT_KEY = "categorylist"
 
         private val SEED_CATEGORIES = listOf(
-            "4809349160627587984" to "Semua",
+//            "4809349160627587984" to "Semua",
             "4380734070238626200" to "K-Drama",
             "5283462032510044280" to "Indo Drama",
-            "8617025562613270856" to "Anime",
+//            "8617025562613270856" to "Anime",
             "5307082080063488480" to "Barat",
-            "8624142774394406504" to "C-Drama",
+//            "8624142774394406504" to "C-Drama",
             "1164329479448281992" to "Thai-Drama",
             "5720220657917522824" to "Reality"
         )
