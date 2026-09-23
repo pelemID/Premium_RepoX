@@ -1095,7 +1095,7 @@ class MovieBoxProvider : MainAPI() {
 //            if (!stream.url.isNullOrBlank() && !stream.signCookie.isNullOrBlank()) {
 //                foundStream = stream
 //                break
-/            }
+//            }
 
             if (stream != null &&
                 !stream.url.isNullOrBlank() &&
