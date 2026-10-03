@@ -22,7 +22,7 @@ class DutaMovie : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "category/box-office/page/%d/" to "Box Office",
+        // "category/box-office/page/%d/" to "Box Office",
         "category/serial-tv/page/%d/" to "TV Series",
 		"action/page/%d/" to "Action",
 		"adventure/page/%d/" to "Adventure",
@@ -31,15 +31,15 @@ class DutaMovie : MainAPI() {
 		"crime/page/%d/" to "Crime",
 		"drama/page/%d/" to "Drama",
 		"fantasy/page/%d/" to "Fantasy",
-		"horror/page/%d/" to "Horror",
+		// "horror/page/%d/" to "Horror",
 		"mystery/page/%d/" to "Mystery",
-		"romance/page/%d/" to "Romance",
+		// "romance/page/%d/" to "Romance",
 		"science-fiction/page/%d/" to "Sci-Fi",
 		"thriller/page/%d/" to "Thriller",
 		"country/china/page/%d/" to "China",
 		"country/indonesia/page/%d/" to "Indonesia",
 		"country/korea/page/%d/" to "Korea",
-		"country/philippines/page/%d/" to "Philippines",
+		// "country/philippines/page/%d/" to "Philippines",
         "country/thailand/page/%d/" to "Thailand"
     )
 
