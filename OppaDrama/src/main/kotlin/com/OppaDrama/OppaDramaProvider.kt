@@ -29,7 +29,7 @@ data class MovieVersionData(
 )
 
 class OppaDramaProvider : MainAPI() {
-    override var mainUrl = "http://45.11.57.192"
+    override var mainUrl = "https://oppadrama.io"
     override var name = "OPPADRAMA"
     override var lang = "id"
     
