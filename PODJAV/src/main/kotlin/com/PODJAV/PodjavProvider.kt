@@ -49,7 +49,7 @@ class PodjavProvider : MainAPI() {
         ).takeIf { it.isNotBlank() } ?: return null
         
         // Ambil gambar sampul/poster
-        val posterUrl = this.selectFirst("img.thumb")?.attr("src")
+        val posterUrl = normalizePosterUrl(this.selectFirst("img.thumb")?.attr("src"))
 
         // Mendeteksi label Uncensored.
         // Dipastikan langsung dari sumber HTML situs; dua penanda ini selalu ada:
@@ -141,6 +141,16 @@ class PodjavProvider : MainAPI() {
         .replace(Regex("""\s{2,}"""), " ")
         .trim()
 
+    /** Older pages retain the retired image CDN, while their og:image uses
+     * the active CDN with the same asset path. Normalize only poster URLs;
+     * video and subtitle hosts are intentionally left untouched.
+     */
+    private fun normalizePosterUrl(raw: String?): String? {
+        val value = raw?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return Regex("""(?i)^(https?://)cdn\.play\.podjav\.tv(?=[:/?#]|$)""")
+            .replace(fixUrl(value)) { "${it.groupValues[1]}cdn.podjav.tv" }
+    }
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -160,9 +170,9 @@ class PodjavProvider : MainAPI() {
         // mengambil poster film lain.
         //
         // og:image juga tidak dipakai: isinya sama dengan versi tegak 379x538.
-        val posterUrl = document.selectFirst("video[data-poster]")
+        val posterUrl = normalizePosterUrl(document.selectFirst("video[data-poster]")
             ?.attr("data-poster")?.trim()?.takeIf { it.isNotBlank() }
-            ?: document.selectFirst(".video-info-top img")?.attr("src")
+            ?: document.selectFirst(".video-info-top img")?.attr("src"))
 
         // SINOPSIS
         // Selector lama "#tab-synopsis .text-sm p" sudah tidak cocok dengan tata
@@ -210,7 +220,7 @@ class PodjavProvider : MainAPI() {
         val recommendations = document.select(".carousel-track a.reko-card").mapNotNull {
             val recUrl = it.attr("href")
             val imgElem = it.selectFirst("img") ?: return@mapNotNull null
-            val recPoster = imgElem.attr("src")
+            val recPoster = normalizePosterUrl(imgElem.attr("src"))
             val recTitle = it.selectFirst(".reko-card-title")?.text() ?: return@mapNotNull null
             
             newMovieSearchResponse(recTitle, recUrl, TvType.NSFW) {
