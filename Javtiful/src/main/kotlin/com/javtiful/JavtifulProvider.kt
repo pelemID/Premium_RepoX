@@ -24,6 +24,22 @@ class JavtifulProvider : MainAPI() {
     private val cardPreviews = Collections.synchronizedMap(object : LinkedHashMap<String, String>(128, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
     })
+    private val cardLabels = Collections.synchronizedMap(object : LinkedHashMap<String, String>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
+    })
+
+    private fun videoLabel(url: String, badge: String = "", category: String = ""): String? {
+        val path = URI(url).path.orEmpty().lowercase()
+        val type = badge.trim().lowercase().replace(Regex("[-_\\s]+"), " ")
+        return when {
+            path.endsWith("-reducing-mosaic") || type in setOf("rm", "reducing mosaic") || category == "reducing-mosaic" -> "[RM]"
+            path.endsWith("-uncensored") || type in setOf("un", "unc", "uncensored", "tanpa sensor") || category == "uncensored" -> "[UN]"
+            else -> cardLabels[url]
+        }
+    }
+
+    private fun labelledTitle(title: String, label: String?): String =
+        if (label == null || title.startsWith(label, true)) title else "$label $title"
 
     // Public browser request headers; certificate verification remains enabled.
     private val baseHeaders = mapOf(
@@ -91,7 +107,7 @@ class JavtifulProvider : MainAPI() {
         }
         val document = res.document
 
-        val homeItems = document.parseCards(res.url)
+        val homeItems = document.parseCards(res.url, request.data.substringAfterLast('/'))
 
         return newHomePageResponse(request, homeItems, hasNext = document.hasNextPage(page, homeItems.isNotEmpty()))
     }
@@ -119,9 +135,9 @@ class JavtifulProvider : MainAPI() {
         return newSearchResponseList(searchResults, hasNext)
     }
 
-    private fun Document.parseCards(base: String): List<SearchResponse> {
+    private fun Document.parseCards(base: String, category: String = ""): List<SearchResponse> {
         val cards = select("article.front-video-card, article.video-card")
-        val parsed = cards.mapNotNull { it.toSearchResult(base) }
+        val parsed = cards.mapNotNull { it.toSearchResult(base, category) }
         if (parsed.isEmpty()) {
             val rejected = cards.groupingBy {
                 when {
@@ -141,7 +157,7 @@ class JavtifulProvider : MainAPI() {
         hasClass("video-card--partner") || selectFirst(".front-partner-badge") != null
 
     // Pemrosesan item card grid & Filter ganda (Partner & Kualitas Non-HD)
-    private fun Element.toSearchResult(base: String): SearchResponse? {
+    private fun Element.toSearchResult(base: String, category: String): SearchResponse? {
         // 1. FILTER PARTNER: Langsung skip jika kartu video berlabel partner / rekomendasi luar
         if (isPartnerCard()) {
             return null
@@ -158,12 +174,14 @@ class JavtifulProvider : MainAPI() {
         val titleElement = this.selectFirst("a.front-video-title, a.video-card__title") ?: return null
         val title = titleElement.text()
         val href = resolveUrl(titleElement.attr("href"), base) ?: return null
+        val label = videoLabel(href, selectFirst(".video-card__type")?.text().orEmpty(), category)
+        if (label != null) cardLabels[href] = label
 
         val thumbnail = selectFirst("a.front-video-thumb, a.video-card__thumbnail")
         val posterUrl = thumbnail?.selectFirst("img")?.poster(base) ?: thumbnail?.poster(base)
         resolveUrl(thumbnail?.attr("data-front-video-preview-src"), base)?.let { cardPreviews[href] = it }
 
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
+        return newMovieSearchResponse(labelledTitle(title, label), href, TvType.NSFW) {
             this.posterUrl = resolveUrl(posterUrl)
             this.posterHeaders = baseHeaders
             addQuality(quality)
@@ -198,7 +216,7 @@ class JavtifulProvider : MainAPI() {
         val recommendationsList = document.parseCards(res.url)
 
         // Build response dulu
-        val response = newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
+        val response = newMovieLoadResponse(labelledTitle(title, videoLabel(res.url) ?: videoLabel(url)), url, TvType.NSFW, dataUrl = url) {
             this.posterUrl = resolveUrl(posterUrl, res.url)
             this.posterHeaders = baseHeaders
             this.plot = plot
