@@ -5,6 +5,11 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Document
+import java.net.URI
+import java.net.URLEncoder
+import kotlinx.coroutines.CancellationException
+import android.util.Log
 
 class JavtifulProvider : MainAPI() {
     override var name = "Javtiful"
@@ -14,7 +19,7 @@ class JavtifulProvider : MainAPI() {
 
     override val hasMainPage = true
 
-    // Base headers untuk bypass proteksi bot Cloudflare & penyamaran browser
+    // Public browser request headers; certificate verification remains enabled.
     private val baseHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
         "Accept-Language" to "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -28,6 +33,39 @@ class JavtifulProvider : MainAPI() {
         mainPage("id/reducing-mosaic", "Reducing Mosaic", horizontalImages = true)
     )
 
+    private fun resolveUrl(value: String?, base: String = "$mainUrl/"): String? {
+        val raw = value?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            val uri = URI(raw)
+            val resolved = if (uri.isAbsolute) uri else URI(base).resolve(uri)
+            if (resolved.scheme !in listOf("https", "http") || resolved.host.isNullOrBlank()) null
+            else if (uri.isAbsolute) raw else resolved.toString()
+        } catch (_: Exception) { null }
+    }
+
+    private fun Element.poster(base: String): String? {
+        val attributes = listOf("data-front-lazy-src", "data-front-lazy-fallback-src", "data-original",
+            "data-src", "data-hi-res-src", "data-source", "data-full", "data-lazy-src", "src")
+        for (attribute in attributes) {
+            for (value in attr(attribute).split('|')) {
+                val url = resolveUrl(value, base) ?: continue
+                if (!URI(url).path.orEmpty().endsWith(".svg", true) && !url.contains("placeholder", true)) return url
+            }
+        }
+        return null
+    }
+
+    private fun Document.hasNextPage(page: Int, fallback: Boolean = false): Boolean {
+        val navigation = selectFirst("nav.front-pagination") ?: return fallback
+        return navigation.select("a[href]").filter {
+            it.attr("href").isNotBlank() && it.attr("href") != "#" && !it.hasClass("disabled") && it.attr("aria-disabled") != "true"
+        }.any {
+            it.attr("rel").split(' ').any { rel -> rel.equals("next", true) } ||
+                it.hasClass("next") || it.text().contains("Berikutnya", true) ||
+                Regex("(?:[?&])page=(\\d+)").find(it.attr("href"))?.groupValues?.get(1)?.toIntOrNull()?.let { next -> next > page } == true
+        }
+    }
+
     // ==================== LOGIKA HALAMAN UTAMA ====================
     override suspend fun getMainPage(
         page: Int,
@@ -40,39 +78,60 @@ class JavtifulProvider : MainAPI() {
         }
 
         val res = app.get(url, headers = baseHeaders)
+        if (!res.isSuccessful) {
+            res.body.close()
+            throw ErrorLoadingException("Javtiful: HTTP ${res.code}")
+        }
         val document = res.document
 
-        val homeItems = document.select("article.front-video-card").mapNotNull {
-            it.toSearchResult()
-        }
+        val homeItems = document.parseCards(res.url)
 
-        return newHomePageResponse(request, homeItems)
+        return newHomePageResponse(request, homeItems, hasNext = document.hasNextPage(page, homeItems.isNotEmpty()))
     }
 
     // ==================== LOGIKA PENCARIAN BERPAGINASI ====================
     override suspend fun search(query: String, page: Int): SearchResponseList? {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val searchUrl = if (page <= 1) {
-            "$mainUrl/id/search?q=$query"
+            "$mainUrl/id/search?q=$encodedQuery"
         } else {
-            "$mainUrl/id/search?page=$page&q=$query"
+            "$mainUrl/id/search?page=$page&q=$encodedQuery"
         }
 
         val res = app.get(searchUrl, headers = baseHeaders)
+        if (!res.isSuccessful) {
+            res.body.close()
+            throw ErrorLoadingException("Javtiful: HTTP ${res.code}")
+        }
         val document = res.document
 
-        val searchResults = document.select("article.front-video-card").mapNotNull {
-            it.toSearchResult()
-        }
+        val searchResults = document.parseCards(res.url)
 
-        val hasNext = document.select("nav.front-pagination a.front-pagination-link").any {
-            it.text().contains("Berikutnya", ignoreCase = true)
-        }
+        val hasNext = document.hasNextPage(page)
 
         return newSearchResponseList(searchResults, hasNext)
     }
 
+    private fun Document.parseCards(base: String): List<SearchResponse> {
+        val cards = select("article.front-video-card")
+        val parsed = cards.mapNotNull { it.toSearchResult(base) }
+        if (parsed.isEmpty()) {
+            val rejected = cards.groupingBy {
+                when {
+                    it.hasClass("front-partner-card") || it.selectFirst(".front-partner-badge") != null -> "partner"
+                    it.selectFirst(".front-quality-tag") == null -> "missing-quality"
+                    !it.selectFirst(".front-quality-tag")!!.text().let { quality -> quality.contains("HD", true) || quality.contains("4K", true) } -> "non-HD"
+                    it.selectFirst("a.front-video-title") == null -> "missing-title"
+                    else -> "invalid-url"
+                }
+            }.eachCount()
+            Log.w(name, "Cards found=${cards.size}, parsed=${parsed.size}, rejected=$rejected")
+        }
+        return parsed
+    }
+
     // Pemrosesan item card grid & Filter ganda (Partner & Kualitas Non-HD)
-    private fun Element.toSearchResult(): SearchResponse? {
+    private fun Element.toSearchResult(base: String): SearchResponse? {
         // 1. FILTER PARTNER: Langsung skip jika kartu video berlabel partner / rekomendasi luar
         if (this.hasClass("front-partner-card") || this.selectFirst(".front-partner-badge") != null) {
             return null
@@ -90,54 +149,11 @@ class JavtifulProvider : MainAPI() {
         val title = titleElement.text()
         val href = titleElement.attr("href")
 
-        // === Resolusi poster: ambil gambar paling tajam yang tersedia ===
-        val thumbElement = this.selectFirst("a.front-video-thumb img")
+        val posterUrl = selectFirst("a.front-video-thumb img")?.poster(base)
+            ?: selectFirst("a.front-video-thumb")?.poster(base)
 
-        // Helper kecil: cek apakah URL keliatan kayak placeholder yang harus diskip
-        fun String.isPlaceholder(): Boolean {
-            val s = this.lowercase()
-            return s.endsWith(".svg") || s.contains("placeholder")
-        }
-
-        // Prioritas 1: data-front-lazy-src (strategi utama website ini)
-        val primaryLazy = thumbElement?.attr("data-front-lazy-src")?.takeIf { it.isNotBlank() }
-
-        // Prioritas 2: data-front-lazy-fallback-src (daftar '|'-separated)
-        val fallbackChain = thumbElement?.attr("data-front-lazy-src")
-            ?.let { listOf(it) }
-            ?: emptyList()
-
-        // Ambil juga data-front-lazy-src dari <a> wrapper (bukan <img>)
-        val aLazySrc = this.selectFirst("a.front-video-thumb")?.attr("data-front-lazy-src")
-            ?.takeIf { it.isNotBlank() }
-
-        val allLazySrcs = (fallbackChain + listOfNotNull(aLazySrc)).distinct()
-
-        // Prioritas 1 final: data-front-lazy-src di <img> atau <a>
-        val primaryLazyFinal = primaryLazy ?: aLazySrc
-
-        // Prioritas 2: data-front-lazy-fallback-src (daftar '|'-separated)
-        val fallbackChainFinal = thumbElement?.attr("data-front-lazy-fallback-src")
-            ?.split('|')
-            ?.map { it.trim() }
-            ?.filter { it.isNotBlank() && !it.isPlaceholder() }
-            ?: emptyList()
-
-        val fallbackCandidate = fallbackChainFinal.firstOrNull { it != primaryLazyFinal }
-            ?: fallbackChainFinal.firstOrNull()
-
-        val posterUrl = primaryLazyFinal?.takeIf { !it.isPlaceholder() }
-            ?: fallbackCandidate
-            ?: thumbElement?.attr("data-original")?.takeIf { it.isNotBlank() && !it.isPlaceholder() }
-            ?: thumbElement?.attr("data-src")?.takeIf { it.isNotBlank() && !it.isPlaceholder() }
-            ?: thumbElement?.attr("data-hi-res-src")?.takeIf { it.isNotBlank() && !it.isPlaceholder() }
-            ?: thumbElement?.attr("data-source")?.takeIf { it.isNotBlank() && !it.isPlaceholder() }
-            ?: thumbElement?.attr("data-full")?.takeIf { it.isNotBlank() && !it.isPlaceholder() }
-            ?: thumbElement?.attr("data-lazy-src")?.takeIf { it.isNotBlank() && !it.isPlaceholder() }
-            ?: thumbElement?.attr("src")?.takeIf { !it.isPlaceholder() }
-
-        return newMovieSearchResponse(title, href, TvType.NSFW) {
-            this.posterUrl = fixUrlNull(posterUrl)
+        return newMovieSearchResponse(title, resolveUrl(href, base) ?: return null, TvType.NSFW) {
+            this.posterUrl = resolveUrl(posterUrl)
             this.posterHeaders = baseHeaders
             addQuality(quality)
         }
@@ -146,6 +162,10 @@ class JavtifulProvider : MainAPI() {
     // ==================== LOGIKA HALAMAN DETAIL (LOAD) ====================
     override suspend fun load(url: String): LoadResponse? {
         val res = app.get(url, headers = baseHeaders)
+        if (!res.isSuccessful) {
+            res.body.close()
+            throw ErrorLoadingException("Javtiful: HTTP ${res.code}")
+        }
         val document = res.document
 
         val title = document.selectFirst(".front-watch-title h1")?.text()
@@ -159,20 +179,16 @@ class JavtifulProvider : MainAPI() {
 
         val actorsList = document.select(".front-watch-actor-card").map { actorCard ->
             val actorName = actorCard.selectFirst("span")?.text() ?: ""
-            val actorThumb = actorCard.selectFirst("img")?.attr("data-original")
-                ?.takeIf { it.isNotBlank() }
-                ?: actorCard.selectFirst("img")?.attr("src")
-            Actor(actorName, fixUrlNull(actorThumb))
+            val actorThumb = actorCard.selectFirst("img")?.poster(res.url)
+            Actor(actorName, resolveUrl(actorThumb, res.url))
         }
 
         // FITUR SARAN FILM: Mengambil item video terkait dari halaman detail
-        val recommendationsList = document.select("article.front-video-card").mapNotNull {
-            it.toSearchResult()
-        }
+        val recommendationsList = document.parseCards(res.url)
 
         // Build response dulu
         val response = newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
-            this.posterUrl = fixUrlNull(posterUrl)
+            this.posterUrl = resolveUrl(posterUrl, res.url)
             this.posterHeaders = baseHeaders
             this.plot = plot
             this.tags = tagsList
@@ -180,11 +196,8 @@ class JavtifulProvider : MainAPI() {
             this.recommendations = recommendationsList
         }
 
-        // === TRAILER: derive preview URL dengan hostname fix dari card ===
-        // Hostname preview BEDA dari hostname main video (main=r2.cloudflarestorage.com,
-        // preview=syyejpyh6y...jav.si). Kita ambil hostname preview dari data-front-video-preview-src
-        // di card rekomendasi pada halaman yang sama.
-        val trailerUrl = extractPreviewUrl(document)
+        // Preserve trailers when the page provides an explicit URL for this video.
+        val trailerUrl = extractPreviewUrl(document, res.url)
         if (!trailerUrl.isNullOrBlank()) {
             response.trailers.add(
                 TrailerData(
@@ -203,83 +216,17 @@ class JavtifulProvider : MainAPI() {
         return response
     }
 
-    // ==================== TRAILER / PREVIEW VIDEO ====================
-    // Frontend Javtiful nampilin preview video on-hover di card.
-    // CDN URL pattern: https://{previewHost}/videos/previews/{YYYY}/{MM}/{VIDEO_CODE}/{VIDEO_CODE}_preview.mp4
-    // Sumber URL preview bisa dari:
-    //   - data-front-video-preview-src di <a class="front-video-thumb"> (cuma untuk card lain, BUKAN video yg sedang dibuka)
-    //   - frontWatchConfig.playerSources[0].src (main URL, perlu ditransform)
-    //   - schema.org JSON-LD VideoObject (uploadDate, duration)
-    private fun extractPreviewUrl(document: org.jsoup.nodes.Document): String? {
-        // Parse frontWatchConfig JSON
-        val config = try {
-            tryParseJson<FrontWatchConfig>(
-                document.selectFirst("script#frontWatchConfig")?.data() ?: ""
-            )
-        } catch (_: Exception) { null }
-
-        val mainSrc = config?.playerSources?.firstOrNull()?.src
-
-        // ===== STEP 1: Cari hostname preview dari card rekomendasi =====
-        // Di halaman detail ada section rekomendasi yang punya preview-src.
-        // Ambil hostname pertama yang valid (dia konsisten untuk semua video di site).
-        val previewHostname = document.select("a.front-video-thumb[data-front-video-preview-src]")
-            .mapNotNull { it.attr("data-front-video-preview-src").takeIf { s -> s.isNotBlank() } }
-            .mapNotNull { url ->
-                Regex("""(https?://[^/]+)""").find(url)?.groupValues?.get(1)
-            }
-            .firstOrNull()
-
-        // ===== STEP 2: Ambil video code & date =====
-        // video code dari main URL (e.g. "VID-E7F85587")
-        val videoCode = mainSrc
-            ?.let { Regex("""/([A-Za-z0-9_-]+)_\d+p\.mp4""").find(it)?.groupValues?.get(1) }
-            ?: extractVideoCodeFromScripts(document)
-
-        // upload date dari JSON-LD VideoObject (paling reliable)
-        val uploadDate = document.select("script[type=\"application/ld+json\"]")
-            .mapNotNull { script ->
-                tryParseJson<Map<String, Any?>>(script.data())?.get("uploadDate") as? String
-            }
-            .firstOrNull { it.startsWith("20") }
-
-        val datePath = uploadDate?.let { dateStr ->
-            // Parse "2026-07-04T00:35:45+07:00" → "2026/07"
-            Regex("""(20\d{2})-(\d{2})""").find(dateStr)?.let {
-                "${it.groupValues[1]}/${it.groupValues[2]}"
+    // Use only explicit preview URLs for the current video, never a recommendation's host/code.
+    private fun extractPreviewUrl(document: Document, base: String): String? {
+        val config = tryParseJson<FrontWatchConfig>(document.selectFirst("script#frontWatchConfig")?.data().orEmpty())
+        listOf(config?.previewUrl, config?.previewVideoUrl, config?.trailerUrl)
+            .firstNotNullOfOrNull { resolveUrl(it, base) }?.let { return it }
+        for (element in document.select(".front-watch-player, .front-player, .front-watch-title")) {
+            for (attribute in listOf("data-front-video-preview-src", "data-preview-src", "data-preview-url", "data-trailer-url")) {
+                resolveUrl(element.attr(attribute), base)?.let { return it }
             }
         }
-
-        // ===== STEP 3: Construct preview URL =====
-        if (!videoCode.isNullOrBlank() && !datePath.isNullOrBlank() && !previewHostname.isNullOrBlank()) {
-            return "$previewHostname/videos/previews/$datePath/$videoCode/${videoCode}_preview.mp4"
-        }
-
-        // ===== STEP 4: Fallback — derive langsung dari mainSrc =====
-        // Kalau hostname preview ga ketemu di card, pakai hostname dari mainSrc
-        // (kadang host-nya sama, kadang beda — tergantung migrasi CDN)
-        if (!videoCode.isNullOrBlank() && !datePath.isNullOrBlank() && !mainSrc.isNullOrBlank()) {
-            val mainHostname = Regex("""(https?://[^/]+)""").find(mainSrc)?.groupValues?.get(1)
-            if (!mainHostname.isNullOrBlank()) {
-                return "$mainHostname/videos/previews/$datePath/$videoCode/${videoCode}_preview.mp4"
-            }
-        }
-
-        // ===== STEP 5: Fallback terakhir — scan scripts =====
-        if (!videoCode.isNullOrBlank() && !datePath.isNullOrBlank()) {
-            // Hardcode hostname preview yang umum dipakai Javtiful sebagai last resort
-            val fallbackHost = "https://syyejpyh6yupolshmbfitseg.jav.si"
-            return "$fallbackHost/videos/previews/$datePath/$videoCode/${videoCode}_preview.mp4"
-        }
-
         return null
-    }
-
-    private fun extractVideoCodeFromScripts(document: org.jsoup.nodes.Document): String? {
-        val codeRegex = Regex("(VID-[A-F0-9]{6,}|\\b[a-f0-9]{16,}\\b)")
-        return document.select("script").mapNotNull { script ->
-            codeRegex.find(script.data())?.value
-        }.firstOrNull()
     }
 
     // ==================== EKSTRAKSI TAUTAN & SUBTITLE ====================
@@ -290,187 +237,173 @@ class JavtifulProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val res = app.get(data, headers = baseHeaders)
+        if (!res.isSuccessful) {
+            res.body.close()
+            throw ErrorLoadingException("Javtiful: HTTP ${res.code}")
+        }
         val document = res.document
+
+        val emitted = mutableSetOf<String>()
+        val videoCallback: (ExtractorLink) -> Unit = { link ->
+            if (link.url.isNotBlank() && emitted.add(link.url)) callback(link)
+        }
+        suspend fun emit(src: String?, mime: String?, size: Int?, label: String) {
+            val url = resolveUrl(src, res.url) ?: return
+            val path = URI(url).path.orEmpty().lowercase()
+            val type = when {
+                mime?.contains("mpegurl", true) == true || mime.equals("hls", true) || path.endsWith(".m3u8") -> ExtractorLinkType.M3U8
+                mime?.contains("dash", true) == true || path.endsWith(".mpd") -> ExtractorLinkType.DASH
+                else -> ExtractorLinkType.VIDEO
+            }
+            videoCallback(newExtractorLink(source = name, name = label, url = url, type = type) {
+                referer = "$mainUrl/"
+                quality = size ?: Qualities.Unknown.value
+                headers = baseHeaders
+            })
+        }
+        val config = tryParseJson<FrontWatchConfig>(document.selectFirst("script#frontWatchConfig")?.data().orEmpty())
+        config?.playerSources?.forEach { emit(it.src, it.type, it.size, "Javtiful Player") }
+        for (iframe in document.select("iframe[src]")) {
+            val frameUrl = resolveUrl(iframe.attr("src"), res.url) ?: continue
+            try {
+                loadExtractor(frameUrl, "$mainUrl/", subtitleCallback, videoCallback)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(name, "Embedded player failed (${e.javaClass.simpleName})")
+            }
+        }
+        for (source in document.select("video[src], video source[src]")) {
+            emit(source.attr("src"), source.attr("type"), source.attr("size").toIntOrNull(), "Javtiful Native Source")
+        }
+
+        if (emitted.isEmpty()) return false
 
         // ------------------------------------------------------------------
         // FITUR PENCARIAN SUBTITLE OTOMATIS VIA SUBTITLECAT (PATCHED: hard-match)
         // ------------------------------------------------------------------
         try {
             // 1. Normalisasi kode film
-            val rawCode = data.substringAfterLast("/").substringBefore("?")
-            val codeRegex = Regex("[a-zA-Z]{2,5}-?[0-9]{3,4}")
-            val normalizedCode = (codeRegex.find(rawCode)?.value ?: rawCode).uppercase()
-            val videoCode = normalizedCode.replace(Regex("([A-Z]{2,5})([0-9]{3,4})"), "$1-$2")
-            val codeLetterPart = videoCode.substringBefore("-")
-            val codeDigitPart = videoCode.substringAfter("-")
+            val codeRegex = Regex("(?i)(?<![a-z0-9])([a-z]{2,5})[-\\s]?([0-9]{3,4})(?![a-z0-9])")
+            val codeMatch = codeRegex.find(document.selectFirst(".front-watch-title h1, h1")?.text().orEmpty())
+                ?: codeRegex.find(java.net.URLDecoder.decode(URI(data).path.substringAfterLast('/'), "UTF-8"))
+            if (codeMatch != null) {
+                val codeLetterPart = codeMatch.groupValues[1].uppercase()
+                val codeDigitPart = codeMatch.groupValues[2]
+                val videoCode = "$codeLetterPart-$codeDigitPart"
 
-            // 2. Request halaman pencarian SubtitleCat
-            val subSearchUrl = "https://www.subtitlecat.com/index.php?search=$videoCode"
-            val subSearchDoc = app.get(subSearchUrl, headers = baseHeaders).document
+                // 2. Request halaman pencarian SubtitleCat
+                val subSearchUrl = "https://www.subtitlecat.com/index.php?search=${URLEncoder.encode(videoCode, "UTF-8")}"
+                val subSearchDoc = app.get(subSearchUrl, headers = baseHeaders + ("Referer" to "https://www.subtitlecat.com/")).document
 
-            // 3. Seleksi kandidat baris hasil pencarian
-            val candidateRows = subSearchDoc.select("table.sub-table tbody tr")
+                // 3. Seleksi kandidat baris hasil pencarian
+                val candidateRows = subSearchDoc.select("table.sub-table tbody tr")
 
-            data class SubtitleCandidate(val row: Element, val anchor: Element?, val labelText: String)
+                data class SubtitleCandidate(val row: Element, val anchor: Element?, val labelText: String)
 
-            val videoCodeNoDash = videoCode.replace("-", "")
-            val fullCodeRegex = Regex(videoCode.replace("-", "[-]?"), RegexOption.IGNORE_CASE)
-            val digitWordRegex = Regex("\\b" + Regex.escape(codeDigitPart) + "\\b")
-            val otherSeriesRegex = Regex("([A-Z]{2,5})[-]?" + Regex.escape(codeDigitPart) + "\\b", RegexOption.IGNORE_CASE)
+                val videoCodeNoDash = videoCode.replace("-", "")
+                val fullCodeRegex = Regex("(?<![A-Z0-9])" + Regex.escape(codeLetterPart) + "[-\\s]?" + Regex.escape(codeDigitPart) + "(?![A-Z0-9])", RegexOption.IGNORE_CASE)
+                val otherSeriesRegex = Regex("(?<![A-Z0-9])([A-Z]{2,5})[-\\s]?" + Regex.escape(codeDigitPart) + "(?![A-Z0-9])", RegexOption.IGNORE_CASE)
 
-            val matchedCandidates: List<SubtitleCandidate> = candidateRows.mapNotNull { row ->
-                val anchor = row.selectFirst("td a")
-                val rowText = row.text().uppercase()
-                val anchorText = anchor?.text()?.uppercase().orEmpty()
-                val hrefText = anchor?.attr("href")?.uppercase().orEmpty()
+                val matchedCandidates: List<SubtitleCandidate> = candidateRows.mapNotNull { row ->
+                    val anchor = row.selectFirst("td a")
+                    val rowText = row.text().uppercase()
+                    val anchorText = anchor?.text()?.uppercase().orEmpty()
+                    val hrefText = anchor?.attr("href")?.uppercase().orEmpty()
 
-                val haystack = "$rowText $anchorText $hrefText"
-                val fullCodeMatch = fullCodeRegex.containsMatchIn(haystack) || haystack.contains(videoCode)
-                val looseMatch = rowText.contains(codeLetterPart) && digitWordRegex.containsMatchIn(rowText)
+                    val haystack = "$rowText $anchorText $hrefText"
+                    val fullCodeMatch = fullCodeRegex.containsMatchIn(haystack)
 
-                if (!fullCodeMatch && !looseMatch) {
-                    null
-                } else {
-                    val conflictingSeries = otherSeriesRegex.findAll(rowText).any { match ->
-                        val normalized = match.value.replace("-", "").uppercase()
-                        normalized != videoCodeNoDash
-                    }
-                    if (conflictingSeries) {
+                    if (!fullCodeMatch) {
                         null
                     } else {
-                        val labelText = row.text().takeIf { it.isNotBlank() }
-                            ?: anchor?.text()?.takeIf { it.isNotBlank() }
-                            ?: "Opsi"
-                        SubtitleCandidate(row, anchor, labelText)
+                        val conflictingSeries = otherSeriesRegex.findAll(rowText).any { match ->
+                            val normalized = match.value.replace(Regex("[-\\s]"), "").uppercase()
+                            normalized != videoCodeNoDash
+                        }
+                        if (conflictingSeries) {
+                            null
+                        } else {
+                            val labelText = row.text().takeIf { it.isNotBlank() }
+                                ?: anchor?.text()?.takeIf { it.isNotBlank() }
+                                ?: "Opsi"
+                            SubtitleCandidate(row, anchor, labelText)
+                        }
                     }
-                }
-            }.distinctBy { it.anchor?.attr("href") ?: it.labelText }
+                }.distinctBy { it.anchor?.attr("href") ?: it.labelText }
 
-            // 5. Kunjungi halaman detail HANYA untuk kandidat yang lolos pencocokan.
-            val finalCandidates = matchedCandidates.take(2)
-            if (finalCandidates.isNotEmpty()) {
-                finalCandidates.forEachIndexed { index, candidate ->
-                    val anchor = candidate.anchor
-                    val subLabel = candidate.labelText
+                // 5. Kunjungi halaman detail HANYA untuk kandidat yang lolos pencocokan.
+                val finalCandidates = matchedCandidates.take(2)
+                if (finalCandidates.isNotEmpty()) {
+                    finalCandidates.forEachIndexed { index, candidate ->
+                        val anchor = candidate.anchor
+                        val subLabel = candidate.labelText
 
-                    val resultPath = anchor?.attr("href")
-                    if (resultPath.isNullOrBlank()) return@forEachIndexed
+                        val resultPath = anchor?.attr("href")
+                        if (resultPath.isNullOrBlank()) return@forEachIndexed
 
-                    val detailUrl = if (resultPath.startsWith("http")) {
-                        resultPath
-                    } else {
-                        "https://www.subtitlecat.com/${resultPath.removePrefix("/")}"
-                    }.replace(" ", "%20")
+                        val detailUrl = resolveUrl(resultPath.replace(" ", "%20"), "https://www.subtitlecat.com/")
+                            ?: return@forEachIndexed
 
-                    try {
-                        val subDetailDoc = app.get(detailUrl, headers = baseHeaders).document
+                        try {
+                            val subDetailDoc = app.get(detailUrl, headers = baseHeaders + ("Referer" to "https://www.subtitlecat.com/")).document
 
-                        val detailTitleRaw = subDetailDoc.title().ifBlank {
-                            subDetailDoc.selectFirst("h1, h2, .sub-title, .page-title")?.text().orEmpty()
-                        }
-                        val detailTitleNormalized = detailTitleRaw.uppercase().replace(Regex("\\s+"), " ")
-                        val detailMatches = detailTitleNormalized.contains(videoCode) ||
-                            (detailTitleNormalized.contains(codeLetterPart) &&
-                                digitWordRegex.containsMatchIn(detailTitleNormalized))
-
-                        if (!detailMatches) {
-                            return@forEachIndexed
-                        }
-
-                        val indoSubPath = subDetailDoc.selectFirst("#download_id")?.attr("href")
-
-                        if (!indoSubPath.isNullOrBlank()) {
-                            val finalDownloadUrl = if (indoSubPath.startsWith("http")) {
-                                indoSubPath
-                            } else {
-                                "https://www.subtitlecat.com/${indoSubPath.removePrefix("/")}"
-                            }.replace(" ", "%20")
-
-                            val lowerUrl = finalDownloadUrl.lowercase()
-                            val isPlausibleSubtitle = lowerUrl.endsWith(".srt") ||
-                                lowerUrl.endsWith(".zip") ||
-                                lowerUrl.endsWith(".rar") ||
-                                lowerUrl.endsWith(".ass") ||
-                                lowerUrl.endsWith(".sub")
-
-                            if (isPlausibleSubtitle) {
-                                subtitleCallback(
-                                    newSubtitleFile(
-                                        lang = "ID - $subLabel (${index + 1}/${finalCandidates.size})",
-                                        url = finalDownloadUrl
-                                    )
-                                )
+                            val detailTitleRaw = subDetailDoc.title().ifBlank {
+                                subDetailDoc.selectFirst("h1, h2, .sub-title, .page-title")?.text().orEmpty()
                             }
+                            val detailTitleNormalized = detailTitleRaw.uppercase().replace(Regex("\\s+"), " ")
+                            val detailMatches = fullCodeRegex.containsMatchIn(detailTitleNormalized) &&
+                                otherSeriesRegex.findAll(detailTitleNormalized).none { it.value.replace(Regex("[-\\s]"), "").uppercase() != videoCodeNoDash }
+
+                            if (!detailMatches) {
+                                return@forEachIndexed
+                            }
+
+                            val indoSubPath = subDetailDoc.selectFirst("#download_id")?.attr("href")
+
+                            if (!indoSubPath.isNullOrBlank()) {
+                                val finalDownloadUrl = resolveUrl(indoSubPath.replace(" ", "%20"), "https://www.subtitlecat.com/")
+                                    ?: return@forEachIndexed
+                                val lowerUrl = URI(finalDownloadUrl).path.orEmpty().lowercase()
+                                val isPlausibleSubtitle = lowerUrl.endsWith(".srt") ||
+                                    lowerUrl.endsWith(".zip") ||
+                                    lowerUrl.endsWith(".rar") ||
+                                    lowerUrl.endsWith(".ass") ||
+                                    lowerUrl.endsWith(".sub")
+
+                                if (isPlausibleSubtitle) {
+                                    subtitleCallback(
+                                        newSubtitleFile(
+                                            lang = "ID - $subLabel (${index + 1}/${finalCandidates.size})",
+                                            url = finalDownloadUrl
+                                        )
+                                    )
+                                }
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // Mencegah kerusakan loop jika satu berkas gagal dimuat
                         }
-                    } catch (e: Exception) {
-                        // Mencegah kerusakan loop jika satu berkas gagal dimuat
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.w(name, "Subtitle lookup failed (${e.javaClass.simpleName})")
         }
         // ------------------------------------------------------------------
 
-        // Jalur Utama Player: Parsing objek JSON konfigurasi #frontWatchConfig
-        val configScript = document.selectFirst("script#frontWatchConfig")?.data()
-        if (!configScript.isNullOrBlank()) {
-            val parsedConfig = tryParseJson<FrontWatchConfig>(configScript)
-
-            parsedConfig?.playerSources?.forEach { source ->
-                val streamUrl = source.src
-                if (!streamUrl.isNullOrBlank()) {
-                    val resQuality = source.size ?: 720
-
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name = "Javtiful (R2 Storage)",
-                            url = streamUrl,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            this.referer = "$mainUrl/"
-                            this.quality = resQuality
-                            // PERBAIKAN BANDWIDTH: Memaksa ExoPlayer mengirimkan browser headers agar tidak di-throttle Cloudflare
-                            this.headers = baseHeaders
-                        }
-                    )
-                }
-            }
-        }
-
-        // Jalur Cadangan 1: Cek player iframe eksternal
-        document.select("iframe").forEach { iframe ->
-            val frameUrl = iframe.attr("src")
-            if (frameUrl.isNotBlank()) {
-                loadExtractor(frameUrl, subtitleCallback, callback)
-            }
-        }
-
-        // Jalur Cadangan 2: Cek raw video source html5 native tag
-        document.select("video source").forEach { srcTag ->
-            val videoUrl = srcTag.attr("src")
-            if (videoUrl.isNotBlank()) {
-                callback(
-                    newExtractorLink(
-                        source = name,
-                        name = "Javtiful Native Source",
-                        url = fixUrl(videoUrl),
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.headers = baseHeaders
-                    }
-                )
-            }
-        }
-
-        return true
+        return emitted.isNotEmpty()
     }
 
     data class FrontWatchConfig(
         @JsonProperty("playerSources") val playerSources: List<PlayerSource>? = null,
-        @JsonProperty("videoTitle") val videoTitle: String? = null
+        @JsonProperty("videoTitle") val videoTitle: String? = null,
+        @JsonProperty("previewUrl") val previewUrl: String? = null,
+        @JsonProperty("previewVideoUrl") val previewVideoUrl: String? = null,
+        @JsonProperty("trailerUrl") val trailerUrl: String? = null
     )
 
     data class PlayerSource(
