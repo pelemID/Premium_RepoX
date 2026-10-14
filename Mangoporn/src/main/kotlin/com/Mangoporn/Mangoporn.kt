@@ -7,6 +7,7 @@ import org.jsoup.nodes.Document
 import java.net.URI
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
+import android.util.Log
 import kotlinx.coroutines.*
 
 class MangoPorn : MainAPI() {
@@ -30,43 +31,61 @@ class MangoPorn : MainAPI() {
     // ==============================
     override val mainPage = mainPageOf(
         // Kategori Utama
-        "$mainUrl/trending/" to "Trending",
-        "$mainUrl/ratings/" to "Top Rated",
+        "$mainUrl/" to "Latest",
+        "$mainUrl/?filter=most-viewed" to "Trending / Most Viewed",
+        "$mainUrl/?filter=popular" to "Top Rated",
         "$mainUrl/genres/porn-movies/" to "Porn Movies",
         "$mainUrl/xxxclips/" to "XXX Clips",
         
         // Kategori Tambahan
-        "$mainUrl/genre/18-teens/" to "18+ Teens",
+        "$mainUrl/movies/genre/18-teens/" to "18+ Teens",
         "$mainUrl/genre/all-girl/" to "All Girl",
         "$mainUrl/genre/all-sex/" to "All Sex",
-        "$mainUrl/genre/asian/" to "Asian",
-        "$mainUrl/genre/bbc/" to "BBC",
-        "$mainUrl/genre/bbw/" to "BBW",
-        "$mainUrl/genre/big-boobs/" to "Big Boobs",
-        "$mainUrl/genre/big-butt/" to "Big Butt",
-        "$mainUrl/genre/big-cocks/" to "Big Cocks",
-        "$mainUrl/genre/blondes/" to "Blondes",
-        "$mainUrl/genre/blowjobs/" to "Blowjobs",
-        "$mainUrl/genre/cuckolds/" to "Cuckolds",
-        "$mainUrl/genre/cumshots/" to "Cumshots",
-        "$mainUrl/genre/deep-throat/" to "Deep Throat",
-        "$mainUrl/genre/facials/" to "Facials"
+        "$mainUrl/movies/genre/asian/" to "Asian",
+        "$mainUrl/movies/genre/bbc/" to "BBC",
+        "$mainUrl/movies/genre/bbw/" to "BBW",
+        "$mainUrl/movies/genre/big-tits/" to "Big Boobs",
+        "$mainUrl/movies/genre/big-butt/" to "Big Butt",
+        "$mainUrl/movies/genre/big-dicks/" to "Big Cocks",
+        "$mainUrl/movies/genre/blondes/" to "Blondes",
+        "$mainUrl/movies/genre/blowjobs/" to "Blowjobs",
+        "$mainUrl/movies/genre/cuckolds/" to "Cuckolds",
+        "$mainUrl/movies/genre/cumshots/" to "Cumshots",
+        "$mainUrl/movies/genre/deep-throat/" to "Deep Throat",
+        "$mainUrl/movies/genre/facials/" to "Facials"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) {
             request.data
         } else {
-            "${request.data.trimEnd('/')}/page/$page/"
+            val uri = URI(request.data)
+            val base = request.data.substringBefore('?').substringBefore('#').trimEnd('/')
+            "$base/page/$page/" + (uri.rawQuery?.let { "?$it" } ?: "")
         }
 
-        val document = getDocument(url)
+        val document = try {
+            getDocument(url)
+        } catch (error: ErrorLoadingException) {
+            // Keep unavailable source categories in the configuration, but isolate
+            // their 404 from the other rows. Never invent a replacement category.
+            if (error.message?.startsWith("MangoPorn: HTTP 404 (") == true) {
+                Log.w("MangoPorn", "Category unavailable: ${request.name}; ${error.message}")
+                return null
+            }
+            throw error
+        }
         
         val items = document.select("article.card, article.item").mapNotNull {
             toSearchResult(it)
         }
 
-        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
+        val hasNext = if (document.selectFirst("nav.pg") != null) {
+            document.selectFirst("nav.pg a.next.page-numbers") != null
+        } else {
+            items.isNotEmpty()
+        }
+        return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
     private suspend fun getDocument(url: String): Document {
@@ -147,16 +166,19 @@ class MangoPorn : MainAPI() {
         val title = document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotBlank() }
             ?: throw ErrorLoadingException("MangoPorn: detail title missing")
 
-        val description = document.selectFirst("div.wp-content p")?.text()?.trim()
+        val description = document.selectFirst(".entry.vid__txt, div.wp-content p")?.text()?.trim()
         
-        val imgElement = document.selectFirst("div.poster img")
+        val imgElement = document.selectFirst(".dp__poster img.vid__poster, div.poster img")
         val poster = posterUrl(imgElement)
 
-        val tags = document.select(".sgeneros a, .persons a[href*='/genre/']").map { it.text() }
+        val tags = document.select(".info a[href*='/movies/genre/'], .sgeneros a, .persons a[href*='/genre/']")
+            .map { it.text().trim() }.filter { it.isNotBlank() }
         
-        val year = document.selectFirst(".textco a[href*='/year/']")?.text()?.toIntOrNull()
+        val yearElement = document.selectFirst(".info a[href*='/movies/year/'], .textco a[href*='/year/']")
+        val year = yearElement?.text()?.trim()?.toIntOrNull()
+            ?: yearElement?.attr("href")?.let { Regex("""/year/(\d{4})(?:/|$)""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
         
-        val actors = document.select("#cast .persons a[href*='/pornstar/']").map { 
+        val actors = document.select(".row--stars a[href*='/movies/pornstar/'], #cast .persons a[href*='/pornstar/']").map {
             ActorData(Actor(it.text(), null)) 
         }
 
