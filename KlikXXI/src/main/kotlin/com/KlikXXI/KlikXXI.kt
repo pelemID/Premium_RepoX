@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class KlikXXI : MainAPI() {
-    override var mainUrl = "https://klikxxi.shop"
+    override var mainUrl = "https://klikxxi.me"
     override var name    = "KlikXXI"
     override val hasMainPage       = true
     override var lang              = "id"
@@ -102,7 +102,7 @@ class KlikXXI : MainAPI() {
     // ─────────────────────────────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
-        isDataJob: Boolean,
+        isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
