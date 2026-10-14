@@ -85,7 +85,7 @@ internal object PodjavSubtitles {
                     // PODJAV's subtitle.php serves VTT; the fragment is never sent to the server.
                     val vttUrl = url.substringBefore('#') + "#.vtt"
                     if (emitted.add(vttUrl)) {
-                        callback(newSubtitleFile("${subtitle.label?.takeIf(String::isNotBlank) ?: "Indonesia"} (PODJAV)", vttUrl) {
+                        callback(newSubtitleFile("by.podjav", vttUrl) {
                             headers = mapOf("Referer" to detailUrl, "Origin" to root)
                         })
                     }
