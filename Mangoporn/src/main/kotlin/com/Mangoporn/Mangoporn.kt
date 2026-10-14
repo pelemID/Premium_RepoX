@@ -8,6 +8,7 @@ import java.net.URI
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
 import android.util.Log
+import org.json.JSONArray
 import kotlinx.coroutines.*
 
 class MangoPorn : MainAPI() {
@@ -203,6 +204,37 @@ class MangoPorn : MainAPI() {
         val document = getDocument(data)
 
         val potentialLinks = linkedSetOf<String>()
+        val directMedia = linkedMapOf<String, String>()
+        val emitted = AtomicBoolean(false)
+        val mediaCallback: (ExtractorLink) -> Unit = { media ->
+            callback(media)
+            emitted.set(true)
+        }
+
+        // Host Links Manager creates its iframe after a click from data-servers.
+        // Match the site's client: t=video is a direct source; other entries are embeds.
+        document.select(".hlm[data-servers]").forEach { player ->
+            val servers = try {
+                JSONArray(player.attr("data-servers"))
+            } catch (error: Exception) {
+                Log.w("MangoPorn", "Invalid Host Links Manager server JSON")
+                return@forEach
+            }
+            for (index in 0 until servers.length()) {
+                val server = servers.optJSONObject(index) ?: continue
+                val rawUrl = server.opt("u") as? String
+                val url = httpUrl(rawUrl, document.baseUri())
+                if (url == null) {
+                    Log.w("MangoPorn", "Host Links Manager server has no usable direct URL")
+                    continue
+                }
+                if (server.optString("t") == "video") {
+                    directMedia[url] = server.optString("l").ifBlank { name }
+                } else {
+                    potentialLinks.add(url)
+                }
+            }
+        }
 
         document.select("#playeroptionsul li a").forEach { link ->
             httpUrl(link.attr("href"), document.baseUri())?.let(potentialLinks::add)
@@ -231,25 +263,26 @@ class MangoPorn : MainAPI() {
             }
         }
 
+        directMedia.forEach { (url, label) ->
+            val type = if (URI(url).path.orEmpty().endsWith(".m3u8", ignoreCase = true)) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
+            }
+            mediaCallback(newExtractorLink(name, label, url, type = type) {
+                this.referer = httpUrl("/", document.baseUri()).orEmpty()
+                this.quality = Qualities.Unknown.value
+            })
+        }
+
         if (potentialLinks.isNotEmpty()) {
             val sortedLinks = potentialLinks.sortedBy { getServerPriority(it) }
-
-            val emitted = AtomicBoolean(false)
-            val mediaCallback: (ExtractorLink) -> Unit = { media ->
-                callback(media)
-                emitted.set(true)
-            }
             coroutineScope {
                 sortedLinks.map { link ->
                     async(Dispatchers.IO) {
                         try {
-                            var finalUrl = link
-                            
-                            // Bypass Doodstream Clone (Playmogo)
-                            if (finalUrl.contains("playmogo.com")) {
-                                finalUrl = finalUrl.replace("playmogo.com", "dood.to")
-                            }
-                            
+                            val finalUrl = link
+
                             // Isolate server failures here while preserving coroutine cancellation.
                             if (finalUrl.contains("luluvid.com")) {
                                 Luluvid().getUrl(finalUrl, data, subtitleCallback, mediaCallback)
@@ -277,10 +310,9 @@ class MangoPorn : MainAPI() {
                     }
                 }.awaitAll()
             }
-            return emitted.get()
         }
 
-        return false
+        return emitted.get()
     }
 }
 
