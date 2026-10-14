@@ -3,6 +3,8 @@ package com.MissAv
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import java.net.URI
+import java.util.Collections
 
 class MissAvProvider : MainAPI() {
     override var name = "MissAv"
@@ -13,6 +15,15 @@ class MissAvProvider : MainAPI() {
     // Pastikan "Show NSFW content" di Pengaturan CloudStream aktif
     override val supportedTypes = setOf(TvType.NSFW)
     override val usesWebView = true 
+
+    private val uncensoredVideos = Collections.synchronizedMap(object : LinkedHashMap<String, Boolean>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 128
+    })
+    private fun isUncensored(url: String): Boolean = uncensoredVideos[url] == true ||
+        runCatching { Regex("(?:^|[-/])uncensored(?:-leak)?(?:[-/]|$)", RegexOption.IGNORE_CASE)
+            .containsMatchIn(URI(url).path.orEmpty()) }.getOrDefault(false)
+    private fun labelledTitle(title: String, uncensored: Boolean): String =
+        if (uncensored && !title.startsWith("[UN]", true)) "[UN] $title" else title
 
     private val headers = mapOf(
         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -38,7 +49,7 @@ class MissAvProvider : MainAPI() {
     // ==========================================
     // FUNGSI BANTUAN UNTUK EKSTRAK VIDEO
     // ==========================================
-    private fun parseVideos(document: Element): List<SearchResponse> {
+    private fun parseVideos(document: Element, uncensoredCategory: Boolean = false): List<SearchResponse> {
         return document.select("div.thumbnail").mapNotNull { element ->
             val titleElement = element.selectFirst("div.my-2 a") ?: return@mapNotNull null
             val title = titleElement.text().trim()
@@ -50,8 +61,10 @@ class MissAvProvider : MainAPI() {
 
             val img = element.selectFirst("img")
             val posterUrl = img?.attr("data-src")?.takeIf { it.isNotBlank() } ?: img?.attr("src")
+            val uncensored = uncensoredCategory || isUncensored(videoUrl)
+            if (uncensored) uncensoredVideos[videoUrl] = true
 
-            newMovieSearchResponse(title, videoUrl, TvType.NSFW) {
+            newMovieSearchResponse(labelledTitle(title, uncensored), videoUrl, TvType.NSFW) {
                 this.posterUrl = posterUrl
             }
         }
@@ -65,7 +78,7 @@ class MissAvProvider : MainAPI() {
         
         try {
             val document = app.get(pageUrl, headers = headers).document
-            val videos = parseVideos(document)
+            val videos = parseVideos(document, isUncensored(request.data))
             
             return newHomePageResponse(
                 list = listOf(HomePageList(request.name, videos, isHorizontalImages = true)),
@@ -107,6 +120,8 @@ class MissAvProvider : MainAPI() {
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
         val tags = document.select("a[href*=/genres/], a[href*=/actresses/]").map { it.text().trim() }
+        val uncensored = isUncensored(url) || document.select("a[href*=/genres/]").any { isUncensored(it.attr("href")) }
+        if (uncensored) uncensoredVideos[url] = true
 
         val recUrls = document.select("a[href*=/genres/], a[href*=/actresses/]")
             .mapNotNull { it.attr("href") }
@@ -119,12 +134,12 @@ class MissAvProvider : MainAPI() {
             if (recommendations.size >= 16) break 
             try {
                 val recDoc = app.get(recUrl, headers = headers).document
-                val videos = parseVideos(recDoc).filter { it.url != url }
+                val videos = parseVideos(recDoc, isUncensored(recUrl)).filter { it.url != url }
                 recommendations.addAll(videos)
             } catch (e: Exception) { }
         }
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        return newMovieLoadResponse(labelledTitle(title, uncensored), url, TvType.NSFW, url) {
             this.posterUrl = posterUrl
             this.plot = plot
             this.tags = tags
@@ -224,6 +239,11 @@ class MissAvProvider : MainAPI() {
                     this.referer = data
                     this.quality = Qualities.Unknown.value
                 }
+            )
+            PodjavSubtitles.load(
+                PodjavSubtitles.code(document.selectFirst("meta[property=og:title]")?.attr("content").orEmpty(), data),
+                isUncensored(data) || document.select("a[href*=/genres/]").any { isUncensored(it.attr("href")) },
+                subtitleCallback
             )
             return true
         }
