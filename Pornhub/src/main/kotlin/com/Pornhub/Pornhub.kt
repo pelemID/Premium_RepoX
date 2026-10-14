@@ -1,10 +1,12 @@
 package com.Pornhub
 
-import com.fasterxml.jackson.databind.JsonNode
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import org.jsoup.nodes.Element
+import java.net.URI
+import kotlinx.coroutines.CancellationException
 
 class PornhubProvider : MainAPI() {
     override var name = "Pornhub"
@@ -13,7 +15,7 @@ class PornhubProvider : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
 
-    // Cookies wajib untuk bypass deteksi bot
+    // Existing public-site preferences; never forward these cookies to media CDNs.
     private val phCookies = mapOf(
         "bs" to "1",
         "accessAgeDisclaimerPH" to "2",
@@ -21,6 +23,50 @@ class PornhubProvider : MainAPI() {
         "platform" to "pc", 
         "cookieConsent" to "3"
     )
+
+    private val posterRequestHeaders get() = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Referer" to "$mainUrl/"
+    )
+
+    private suspend fun requestPage(url: String, stage: String) = try {
+        app.get(url, cookies = phCookies, headers = mapOf("User-Agent" to USER_AGENT))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        val host = runCatching { URI(url).host }.getOrNull()
+        val causes = generateSequence<Throwable>(e) { it.cause }
+            .take(5).joinToString("/") { it.javaClass.simpleName }
+        // No URL query strings or cookies in diagnostics; keep the original exception.
+        Log.w(name, "$stage request on $host failed ($causes)")
+        throw e
+    }
+
+    private fun resolveHttpUrl(value: String?, base: String = "$mainUrl/"): String? {
+        val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return try {
+            val uri = URI(raw)
+            val resolved = if (uri.isAbsolute) uri else URI(base).resolve(uri)
+            if (resolved.scheme !in listOf("https", "http") || resolved.host.isNullOrBlank()) null
+            else if (uri.isAbsolute) raw else resolved.toString()
+        } catch (_: Exception) { null }
+    }
+
+    private fun Element.thumbnail(): String? {
+        for (attribute in listOf("data-image", "data-src", "data-thumb_url", "data-mediumthumb")) {
+            resolveHttpUrl(attr(attribute))?.let { return it }
+        }
+        for (attribute in listOf("data-srcset", "srcset")) {
+            val candidates = attr(attribute).split(',').mapNotNull { entry ->
+                val parts = entry.trim().split(Regex("\\s+"))
+                val url = resolveHttpUrl(parts.firstOrNull()) ?: return@mapNotNull null
+                val size = parts.getOrNull(1)?.dropLast(1)?.toDoubleOrNull() ?: 0.0
+                url to size
+            }
+            candidates.maxByOrNull { it.second }?.first?.let { return it }
+        }
+        return resolveHttpUrl(attr("src"))
+    }
 
     // DAFTAR KATEGORI
     override val mainPage = mainPageOf(
@@ -47,7 +93,7 @@ class PornhubProvider : MainAPI() {
             }
         }
         
-        val doc = app.get(url, cookies = phCookies, headers = mapOf("User-Agent" to USER_AGENT)).document
+        val doc = requestPage(url, "listing").document
         
         // KUNCI JAWABAN TERMUX: Memasukkan #showAllChanelVideos (typo asli dari server) di prioritas utama
         val mainContainer = doc.selectFirst("#showAllChanelVideos") // Prioritas 1: Halaman Channel (Tab Video)
@@ -78,7 +124,7 @@ class PornhubProvider : MainAPI() {
         val formattedQuery = java.net.URLEncoder.encode(query, "utf-8")
         val url = "$mainUrl/video/search?search=$formattedQuery&page=$page"
         
-        val doc = app.get(url, cookies = phCookies, headers = mapOf("User-Agent" to USER_AGENT)).document
+        val doc = requestPage(url, "search").document
         
         val mainContainer = doc.selectFirst("#videoSearchResult") ?: doc.selectFirst("ul.search-video-results")
         val results = mainContainer?.select("li")?.mapNotNull {
@@ -101,29 +147,26 @@ class PornhubProvider : MainAPI() {
             ?: linkElement.text().takeIf { it.isNotBlank() }
             ?: "Unknown Title"
         
-        val imgElement = this.selectFirst("img")
-        val posterUrl = imgElement?.attr("data-image")?.takeIf { it.isNotBlank() }
-            ?: imgElement?.attr("data-src")?.takeIf { it.isNotBlank() }
-            ?: imgElement?.attr("data-thumb_url")?.takeIf { it.isNotBlank() }
-            ?: imgElement?.attr("data-mediumthumb")?.takeIf { it.isNotBlank() }
-            ?: imgElement?.attr("src")
+        val posterUrl = select("a[href*=viewkey] img").firstNotNullOfOrNull { it.thumbnail() }
+            ?: select("img")
+                .firstNotNullOfOrNull { it.thumbnail() }
         
         return newAnimeSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
-            this.posterHeaders = mapOf("Referer" to "$mainUrl/")
+            this.posterHeaders = posterRequestHeaders
         }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val doc = app.get(url, cookies = phCookies, headers = mapOf("User-Agent" to USER_AGENT)).document
+        val doc = requestPage(url, "detail").document
         val title = doc.selectFirst("h1.title")?.text() ?: ""
         
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = resolveHttpUrl(doc.selectFirst("meta[property=og:image]")?.attr("content"), url)
         val durationText = doc.selectFirst(".duration")?.text()
         
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
-            this.posterHeaders = mapOf("Referer" to "$mainUrl/")
+            this.posterHeaders = posterRequestHeaders
             this.plot = doc.selectFirst(".video-description")?.text()
             this.tags = doc.select(".categoriesWrapper a").map { it.text() }
             
@@ -149,71 +192,93 @@ class PornhubProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val html = app.get(data, cookies = phCookies, headers = mapOf("User-Agent" to USER_AGENT)).text
+        val html = requestPage(data, "player-page").text
         
-        var jsonString = ""
-        val startIndex = html.indexOf("\"mediaDefinitions\":[")
-        if (startIndex != -1) {
-            var bracketCount = 0
-            val arrayStart = html.indexOf("[", startIndex)
-            for (i in arrayStart until html.length) {
-                val char = html[i]
-                if (char == '[') bracketCount++
-                else if (char == ']') bracketCount--
-                
-                if (bracketCount == 0) {
-                    jsonString = html.substring(arrayStart, i + 1)
-                    break
-                }
-            }
+        val jsonString = mediaDefinitionsJson(html) ?: return false
+        val mediaList = try {
+            parseJson<List<Map<String, Any?>>>(jsonString)
+        } catch (_: Exception) {
+            return false
         }
-        
-        if (jsonString.isNotBlank()) {
-            try {
-                val mediaList = parseJson<List<Map<String, Any>>>(jsonString)
-                
-                mediaList.forEach { media ->
-                    val videoUrl = media["videoUrl"] as? String ?: return@forEach
-                    if (videoUrl.isBlank()) return@forEach
-                    
-                    val format = media["format"] as? String ?: ""
-                    val rawQuality = media["quality"]
-                    val qualityStr = when (rawQuality) {
-                        is List<*> -> rawQuality.firstOrNull()?.toString() ?: "Unknown"
-                        else -> rawQuality?.toString() ?: "Unknown"
-                    }
-                    
-                    if (qualityStr.isBlank() || qualityStr == "Unknown") return@forEach
-                    
-                    val cleanUrl = videoUrl.replace("\\/", "/")
-                    val qualInt = getQualityFromName(qualityStr)
-                    val isM3u8 = format.contains("hls", true) || cleanUrl.contains(".m3u8")
+        val pageUri = URI(data)
+        val mediaHeaders = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Origin" to mainUrl,
+            "Referer" to data
+        )
+        val emitted = mutableSetOf<String>()
+        val endpoints = mutableSetOf<String>()
 
-                    try {
-                        val check = app.get(cleanUrl, headers = mapOf("Origin" to mainUrl, "Referer" to "$mainUrl/"))
-                        if (check.isSuccessful) {
-                            callback(
-                                newExtractorLink(
-                                    source = this@PornhubProvider.name,
-                                    name = "PH Player $qualityStr",
-                                    url = cleanUrl,
-                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                ) {
-                                    this.headers = mapOf(
-                                        "Origin" to mainUrl,
-                                        "Referer" to "$mainUrl/"
-                                    )
-                                    this.quality = qualInt
-                                }
-                            )
-                        }
-                    } catch (e: Exception) {}
-                }
-                return true
+        suspend fun emit(media: Map<String, Any?>, inheritedFormat: String = "") {
+            val mediaUrl = resolveHttpUrl(media["videoUrl"] as? String, data) ?: return
+            // get_media returns JSON definitions, not bytes a media player can decode.
+            if (URI(mediaUrl).path.orEmpty().startsWith("/video/get_media")) return
+            val format = (media["format"] as? String).orEmpty().ifBlank { inheritedFormat }
+            val path = URI(mediaUrl).path.orEmpty().lowercase()
+            val isHls = path.endsWith(".m3u8") || format.equals("hls", true)
+            val isVideo = path.endsWith(".mp4") || format.equals("mp4", true)
+            if ((!isHls && !isVideo) || !emitted.add(mediaUrl)) return
+            // A quality array describes an adaptive playlist, not its first rendition.
+            val qualityValue = when (val raw = media["quality"]) {
+                is List<*> -> raw.singleOrNull()
+                else -> raw
+            }
+            val height = qualityValue?.toString()?.removeSuffix("p")?.toIntOrNull()
+            callback(newExtractorLink(
+                source = name,
+                name = "PH Player ${height?.let { "${it}p" } ?: "Auto"}",
+                url = mediaUrl,
+                type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            ) {
+                this.headers = mediaHeaders
+                this.referer = data
+                this.quality = height ?: Qualities.Unknown.value
+            })
+        }
+
+        // Publish direct streams immediately; do not download whole MP4s as a preflight.
+        for (media in mediaList) emit(media)
+        for (media in mediaList) {
+            val endpoint = resolveHttpUrl(media["videoUrl"] as? String, data) ?: continue
+            val uri = URI(endpoint)
+            if (!uri.path.orEmpty().startsWith("/video/get_media")) continue
+            // Cookies belong only to the same HTTPS site that supplied the player data.
+            if (uri.scheme != "https" || uri.host != pageUri.host || uri.port != pageUri.port) continue
+            if (!endpoints.add(endpoint)) continue
+            try {
+                val response = app.get(endpoint, cookies = phCookies, headers = mediaHeaders, allowRedirects = false)
+                if (!response.isSuccessful) continue
+                val definitions = parseJson<List<Map<String, Any?>>>(response.text)
+                for (definition in definitions) emit(definition, (media["format"] as? String).orEmpty())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.w(name, "Player metadata on ${uri.host} failed (${e.javaClass.simpleName})")
             }
         }
-        return false
+        return emitted.isNotEmpty()
+    }
+
+    private fun mediaDefinitionsJson(html: String): String? {
+        val match = Regex("""["']mediaDefinitions["']\s*:\s*\[""").find(html) ?: return null
+        val start = match.range.last
+        var depth = 0
+        var quoted = false
+        var escaped = false
+        for (i in start until html.length) {
+            val character = html[i]
+            if (quoted) {
+                if (escaped) escaped = false
+                else if (character == '\\') escaped = true
+                else if (character == '"') quoted = false
+            } else {
+                when (character) {
+                    '"' -> quoted = true
+                    '[' -> depth++
+                    ']' -> if (--depth == 0) return html.substring(start, i + 1)
+                }
+            }
+        }
+        return null
     }
 }
