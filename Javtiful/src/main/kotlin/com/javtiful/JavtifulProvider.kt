@@ -8,6 +8,7 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.Document
 import java.net.URI
 import java.net.URLEncoder
+import java.util.Collections
 import kotlinx.coroutines.CancellationException
 import android.util.Log
 
@@ -18,6 +19,27 @@ class JavtifulProvider : MainAPI() {
     override val supportedTypes: Set<TvType> = setOf(TvType.NSFW)
 
     override val hasMainPage = true
+
+    // Remember only preview URLs explicitly attached to this video's listing card.
+    private val cardPreviews = Collections.synchronizedMap(object : LinkedHashMap<String, String>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
+    })
+    private val cardLabels = Collections.synchronizedMap(object : LinkedHashMap<String, String>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
+    })
+
+    private fun videoLabel(url: String, badge: String = "", category: String = ""): String? {
+        val path = URI(url).path.orEmpty().lowercase()
+        val type = badge.trim().lowercase().replace(Regex("[-_\\s]+"), " ")
+        return when {
+            path.endsWith("-reducing-mosaic") || type in setOf("rm", "reducing mosaic") || category == "reducing-mosaic" -> "[RM]"
+            path.endsWith("-uncensored") || type in setOf("un", "unc", "uncensored", "tanpa sensor") || category == "uncensored" -> "[UN]"
+            else -> cardLabels[url]
+        }
+    }
+
+    private fun labelledTitle(title: String, label: String?): String =
+        if (label == null || title.startsWith(label, true)) title else "$label $title"
 
     // Public browser request headers; certificate verification remains enabled.
     private val baseHeaders = mapOf(
@@ -56,9 +78,10 @@ class JavtifulProvider : MainAPI() {
     }
 
     private fun Document.hasNextPage(page: Int, fallback: Boolean = false): Boolean {
-        val navigation = selectFirst("nav.front-pagination") ?: return fallback
+        val navigation = selectFirst("nav.front-pagination, nav.pagination") ?: return fallback
         return navigation.select("a[href]").filter {
-            it.attr("href").isNotBlank() && it.attr("href") != "#" && !it.hasClass("disabled") && it.attr("aria-disabled") != "true"
+            it.attr("href").isNotBlank() && it.attr("href") != "#" && !it.hasClass("disabled") &&
+                !it.hasClass("is-disabled") && it.attr("aria-disabled") != "true"
         }.any {
             it.attr("rel").split(' ').any { rel -> rel.equals("next", true) } ||
                 it.hasClass("next") || it.text().contains("Berikutnya", true) ||
@@ -84,7 +107,7 @@ class JavtifulProvider : MainAPI() {
         }
         val document = res.document
 
-        val homeItems = document.parseCards(res.url)
+        val homeItems = document.parseCards(res.url, request.data.substringAfterLast('/'))
 
         return newHomePageResponse(request, homeItems, hasNext = document.hasNextPage(page, homeItems.isNotEmpty()))
     }
@@ -112,16 +135,16 @@ class JavtifulProvider : MainAPI() {
         return newSearchResponseList(searchResults, hasNext)
     }
 
-    private fun Document.parseCards(base: String): List<SearchResponse> {
-        val cards = select("article.front-video-card")
-        val parsed = cards.mapNotNull { it.toSearchResult(base) }
+    private fun Document.parseCards(base: String, category: String = ""): List<SearchResponse> {
+        val cards = select("article.front-video-card, article.video-card")
+        val parsed = cards.mapNotNull { it.toSearchResult(base, category) }
         if (parsed.isEmpty()) {
             val rejected = cards.groupingBy {
                 when {
-                    it.hasClass("front-partner-card") || it.selectFirst(".front-partner-badge") != null -> "partner"
-                    it.selectFirst(".front-quality-tag") == null -> "missing-quality"
-                    !it.selectFirst(".front-quality-tag")!!.text().let { quality -> quality.contains("HD", true) || quality.contains("4K", true) } -> "non-HD"
-                    it.selectFirst("a.front-video-title") == null -> "missing-title"
+                    it.isPartnerCard() -> "partner"
+                    it.selectFirst(".front-quality-tag, .video-card__details strong") == null -> "missing-quality"
+                    !it.selectFirst(".front-quality-tag, .video-card__details strong")!!.text().let { quality -> quality.contains("HD", true) || quality.contains("4K", true) } -> "non-HD"
+                    it.selectFirst("a.front-video-title, a.video-card__title") == null -> "missing-title"
                     else -> "invalid-url"
                 }
             }.eachCount()
@@ -130,29 +153,35 @@ class JavtifulProvider : MainAPI() {
         return parsed
     }
 
+    private fun Element.isPartnerCard(): Boolean = hasClass("front-partner-card") ||
+        hasClass("video-card--partner") || selectFirst(".front-partner-badge") != null
+
     // Pemrosesan item card grid & Filter ganda (Partner & Kualitas Non-HD)
-    private fun Element.toSearchResult(base: String): SearchResponse? {
+    private fun Element.toSearchResult(base: String, category: String): SearchResponse? {
         // 1. FILTER PARTNER: Langsung skip jika kartu video berlabel partner / rekomendasi luar
-        if (this.hasClass("front-partner-card") || this.selectFirst(".front-partner-badge") != null) {
+        if (isPartnerCard()) {
             return null
         }
 
         // 2. FILTER LOGO HD: Cari elemen badge kualitas, wajib ada dan harus berlogo HD/4K
-        val qualityElement = this.selectFirst(".front-quality-tag") ?: return null
+        val qualityElement = this.selectFirst(".front-quality-tag, .video-card__details strong") ?: return null
         val quality = qualityElement.text()
 
         if (!quality.contains("HD", ignoreCase = true) && !quality.contains("4K", ignoreCase = true)) {
             return null
         }
 
-        val titleElement = this.selectFirst("a.front-video-title") ?: return null
+        val titleElement = this.selectFirst("a.front-video-title, a.video-card__title") ?: return null
         val title = titleElement.text()
-        val href = titleElement.attr("href")
+        val href = resolveUrl(titleElement.attr("href"), base) ?: return null
+        val label = videoLabel(href, selectFirst(".video-card__type")?.text().orEmpty(), category)
+        if (label != null) cardLabels[href] = label
 
-        val posterUrl = selectFirst("a.front-video-thumb img")?.poster(base)
-            ?: selectFirst("a.front-video-thumb")?.poster(base)
+        val thumbnail = selectFirst("a.front-video-thumb, a.video-card__thumbnail")
+        val posterUrl = thumbnail?.selectFirst("img")?.poster(base) ?: thumbnail?.poster(base)
+        resolveUrl(thumbnail?.attr("data-front-video-preview-src"), base)?.let { cardPreviews[href] = it }
 
-        return newMovieSearchResponse(title, resolveUrl(href, base) ?: return null, TvType.NSFW) {
+        return newMovieSearchResponse(labelledTitle(title, label), href, TvType.NSFW) {
             this.posterUrl = resolveUrl(posterUrl)
             this.posterHeaders = baseHeaders
             addQuality(quality)
@@ -168,16 +197,16 @@ class JavtifulProvider : MainAPI() {
         }
         val document = res.document
 
-        val title = document.selectFirst(".front-watch-title h1")?.text()
+        val title = document.selectFirst(".front-watch-title h1, .watch-title h1")?.text()
             ?: document.selectFirst("h1")?.text()
             ?: "Javtiful Video"
 
         val posterUrl = document.selectFirst("meta[property=\"og:image\"]")?.attr("content")
         val plot = document.selectFirst("meta[name=\"description\"]")?.attr("content")
 
-        val tagsList = document.select(".front-watch-link-chip").map { it.text() }
+        val tagsList = document.select(".front-watch-link-chip, .watch-link-chip").map { it.text() }
 
-        val actorsList = document.select(".front-watch-actor-card").map { actorCard ->
+        val actorsList = document.select(".front-watch-actor-card, .watch-actor-card").map { actorCard ->
             val actorName = actorCard.selectFirst("span")?.text() ?: ""
             val actorThumb = actorCard.selectFirst("img")?.poster(res.url)
             Actor(actorName, resolveUrl(actorThumb, res.url))
@@ -187,7 +216,7 @@ class JavtifulProvider : MainAPI() {
         val recommendationsList = document.parseCards(res.url)
 
         // Build response dulu
-        val response = newMovieLoadResponse(title, url, TvType.NSFW, dataUrl = url) {
+        val response = newMovieLoadResponse(labelledTitle(title, videoLabel(res.url) ?: videoLabel(url)), url, TvType.NSFW, dataUrl = url) {
             this.posterUrl = resolveUrl(posterUrl, res.url)
             this.posterHeaders = baseHeaders
             this.plot = plot
@@ -197,7 +226,7 @@ class JavtifulProvider : MainAPI() {
         }
 
         // Preserve trailers when the page provides an explicit URL for this video.
-        val trailerUrl = extractPreviewUrl(document, res.url)
+        val trailerUrl = extractPreviewUrl(document, res.url) ?: cardPreviews[url] ?: cardPreviews[res.url]
         if (!trailerUrl.isNullOrBlank()) {
             response.trailers.add(
                 TrailerData(
@@ -218,7 +247,7 @@ class JavtifulProvider : MainAPI() {
 
     // Use only explicit preview URLs for the current video, never a recommendation's host/code.
     private fun extractPreviewUrl(document: Document, base: String): String? {
-        val config = tryParseJson<FrontWatchConfig>(document.selectFirst("script#frontWatchConfig")?.data().orEmpty())
+        val config = tryParseJson<FrontWatchConfig>(document.selectFirst("script#frontWatchConfig, script#watch-config")?.data().orEmpty())
         listOf(config?.previewUrl, config?.previewVideoUrl, config?.trailerUrl)
             .firstNotNullOfOrNull { resolveUrl(it, base) }?.let { return it }
         for (element in document.select(".front-watch-player, .front-player, .front-watch-title")) {
@@ -261,7 +290,7 @@ class JavtifulProvider : MainAPI() {
                 headers = baseHeaders
             })
         }
-        val config = tryParseJson<FrontWatchConfig>(document.selectFirst("script#frontWatchConfig")?.data().orEmpty())
+        val config = tryParseJson<FrontWatchConfig>(document.selectFirst("script#frontWatchConfig, script#watch-config")?.data().orEmpty())
         config?.playerSources?.forEach { emit(it.src, it.type, it.size, "Javtiful Player") }
         for (iframe in document.select("iframe[src]")) {
             val frameUrl = resolveUrl(iframe.attr("src"), res.url) ?: continue
@@ -285,7 +314,7 @@ class JavtifulProvider : MainAPI() {
         try {
             // 1. Normalisasi kode film
             val codeRegex = Regex("(?i)(?<![a-z0-9])([a-z]{2,5})[-\\s]?([0-9]{3,4})(?![a-z0-9])")
-            val codeMatch = codeRegex.find(document.selectFirst(".front-watch-title h1, h1")?.text().orEmpty())
+            val codeMatch = codeRegex.find(document.selectFirst(".front-watch-title h1, .watch-title h1, h1")?.text().orEmpty())
                 ?: codeRegex.find(java.net.URLDecoder.decode(URI(data).path.substringAfterLast('/'), "UTF-8"))
             if (codeMatch != null) {
                 val codeLetterPart = codeMatch.groupValues[1].uppercase()
