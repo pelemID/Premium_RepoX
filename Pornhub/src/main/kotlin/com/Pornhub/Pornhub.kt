@@ -236,7 +236,8 @@ class PornhubProvider : MainAPI() {
             })
         }
 
-        // Publish direct streams immediately; do not download whole MP4s as a preflight.
+        // NiceHttp bodies are lazy: media preflights opened responses without closing them.
+        // Publish streams directly and let the player own media requests instead.
         for (media in mediaList) emit(media)
         for (media in mediaList) {
             val endpoint = resolveHttpUrl(media["videoUrl"] as? String, data) ?: continue
@@ -247,9 +248,13 @@ class PornhubProvider : MainAPI() {
             if (!endpoints.add(endpoint)) continue
             try {
                 val response = app.get(endpoint, cookies = phCookies, headers = mediaHeaders, allowRedirects = false)
-                if (!response.isSuccessful) continue
-                val definitions = parseJson<List<Map<String, Any?>>>(response.text)
-                for (definition in definitions) emit(definition, (media["format"] as? String).orEmpty())
+                try {
+                    if (!response.isSuccessful) continue
+                    val definitions = parseJson<List<Map<String, Any?>>>(response.text)
+                    for (definition in definitions) emit(definition, (media["format"] as? String).orEmpty())
+                } finally {
+                    response.body.close()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
