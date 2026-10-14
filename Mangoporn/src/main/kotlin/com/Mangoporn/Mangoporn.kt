@@ -62,7 +62,7 @@ class MangoPorn : MainAPI() {
 
         val document = getDocument(url)
         
-        val items = document.select("article.item").mapNotNull {
+        val items = document.select("article.card, article.item").mapNotNull {
             toSearchResult(it)
         }
 
@@ -72,7 +72,8 @@ class MangoPorn : MainAPI() {
     private suspend fun getDocument(url: String): Document {
         val response = app.get(url, headers = headers)
         if (response.code !in 200..299) {
-            throw ErrorLoadingException("MangoPorn: HTTP ${response.code}")
+            val path = runCatching { URI(response.url).path }.getOrNull().orEmpty()
+            throw ErrorLoadingException("MangoPorn: HTTP ${response.code} ($path)")
         }
         val document = response.document
         // Resolve relative assets against the actual page after HTTP redirects.
@@ -105,12 +106,14 @@ class MangoPorn : MainAPI() {
     }
 
     private fun toSearchResult(element: Element): SearchResponse? {
-        val titleElement = element.selectFirst("h3 > a")
+        val titleElement = element.selectFirst(".card__t a")
+            ?: element.selectFirst("h3 > a")
             ?: element.selectFirst("div.title > a")
+            ?: element.selectFirst("a.card__th")
             ?: element.selectFirst("div.image > a")
             ?: return null
 
-        val image = element.selectFirst("img")
+        val image = element.selectFirst("img.card__img") ?: element.selectFirst("img")
         val title = titleElement.text().trim().ifBlank { image?.attr("alt")?.trim().orEmpty() }
             .takeIf { it.isNotBlank() } ?: return null
         val url = httpUrl(titleElement.attr("href"), element.baseUri().ifBlank { mainUrl })
@@ -130,7 +133,7 @@ class MangoPorn : MainAPI() {
         
         val document = getDocument(url)
         
-        return document.select("div.result-item, article.item").mapNotNull {
+        return document.select("article.card, div.result-item, article.item").mapNotNull {
             toSearchResult(it)
         }
     }
