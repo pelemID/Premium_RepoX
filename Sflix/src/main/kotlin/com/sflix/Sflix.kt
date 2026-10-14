@@ -27,7 +27,6 @@ class Sflix : MainAPI() {
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/platform/play-list?platform=AppleTV" to "Apple TV+",
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/platform/play-list?platform=Viu" to "Viu",
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/platform/play-list?platform=Hulu" to "Hulu",
-        "https://h5-api.aoneroom.com/wefeed-h5api-bff/platform/play-list?platform=Hoichoi" to "Hoichoi",
         
         // Kategori Genre
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=6528093688173053896" to "IndoMovie",
@@ -36,10 +35,9 @@ class Sflix : MainAPI() {
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=5848753831881965888" to "Horror Indo",
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=3528002473103362040" to "Horror Lucu",
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=1469286917119311888" to "Hollywood",
-//        "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=8027941456897802448" to "Pernikahan Palsu",
+        "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=8027941456897802448" to "Pernikahan Palsu",
         "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=1164329479448281992" to "Drama Thailand",
-        "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=173752404280836544" to "Drama Cina"
-        
+        "https://h5-api.aoneroom.com/wefeed-h5api-bff/ranking-list/content?id=173752404280836544" to "Drama Ahok"
     )
 
     // ==========================================
@@ -352,11 +350,8 @@ class Sflix : MainAPI() {
                 val langName = caption.lanName ?: "Unknown"
                 
                 subtitleCallback.invoke(
-                    SubtitleFile(
-                        lang = langName,
-                        url = subUrl
-                    )
-                )
+          newSubtitleFile(langName, subUrl)
+      )
             }
         }
 
