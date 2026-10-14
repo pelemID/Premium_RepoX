@@ -35,7 +35,7 @@ class MissAvProvider : MainAPI() {
         "$mainUrl/id/actresses/Amu%20Hanamiya" to "Amu"
     )
 
-    // ==========================================
+   // ==========================================
     // FUNGSI BANTUAN UNTUK EKSTRAK VIDEO
     // ==========================================
     private fun parseVideos(document: Element): List<SearchResponse> {
@@ -106,13 +106,7 @@ class MissAvProvider : MainAPI() {
         val title = document.selectFirst("meta[property=og:title]")?.attr("content") ?: return null
         val posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
-//        val tags = document.select("a[href*=/genres/], a[href*=/actresses/]").map { it.text().trim() }
-
-        val tags = document.select("div").firstOrNull {
-                        it.selectFirst("span")?.text()?.trim() == "Genre:"
-                    }?.select("a")?.map {
-                        it.text().trim()
-                        } ?: emptyList()
+        val tags = document.select("a[href*=/genres/], a[href*=/actresses/]").map { it.text().trim() }
 
         val recUrls = document.select("a[href*=/genres/], a[href*=/actresses/]")
             .mapNotNull { it.attr("href") }
@@ -207,11 +201,8 @@ class MissAvProvider : MainAPI() {
                                 
                                 // Kirim setiap subtitle yang berhasil ditemukan ke CloudStream
                                 subtitleCallback.invoke(
-                                    SubtitleFile(
-                                        lang = "ID - $subLabel",
-                                        url = finalDownloadUrl
-                                    )
-                                )
+                          newSubtitleFile("ID - $subLabel", finalDownloadUrl)
+                      )
                             }
                         } catch (e: Exception) {
                             // Abaikan error pada satu file agar tidak mengganggu file lainnya
