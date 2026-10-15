@@ -4,13 +4,17 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 import android.util.Base64
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.joinAll
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -118,37 +122,61 @@ class JavHey : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        val html = app.get(data, headers = headers).text
-        val rawLinks = mutableSetOf<String>()
-
-        Regex("""id=["']links["'][^>]*value=["']([^"']+)["']""").findAll(html).forEach { match ->
-            try {
-                val decoded = String(Base64.decode(match.groupValues[1], Base64.DEFAULT))
-                decoded.split(",,,").forEach { 
-                    if (it.startsWith("http")) rawLinks.add(it.trim()) 
-                }
-            } catch (e: Exception) { e.printStackTrace() }
+        val response = app.get(data, headers = headers)
+        if (!response.isSuccessful) {
+            response.body.close()
+            throw ErrorLoadingException("JAVHEY: HTTP ${response.code}")
         }
-
-        rawLinks.forEach { url ->
-            launch(Dispatchers.IO) {
-                try {
-                    var fixedUrl = url
-                    if (url.contains("minochinos.com") || url.contains("terbit2.com")) {
-                        fixedUrl = url.replace("minochinos.com", "streamwish.to")
-                                      .replace("terbit2.com", "streamwish.to")
-                        loadExtractor(fixedUrl, data, subtitleCallback, callback)
-                    } else if (url.contains("bysebuho") || url.contains("bysezejataos") || url.contains("bysevepoin")) {
-                        ByseSXLocal().getUrl(url, data, subtitleCallback, callback)
-                    } else {
-                        loadExtractor(fixedUrl, data, subtitleCallback, callback)
+        val rawLinks = mutableSetOf<String>()
+        response.document.select("[id=links][value]").forEach { element ->
+            try {
+                val decoded = String(Base64.decode(element.attr("value"), Base64.DEFAULT), StandardCharsets.UTF_8)
+                decoded.split(",,,").forEach {
+                    val raw = it.trim()
+                    if (raw.startsWith("http://", true) || raw.startsWith("https://", true) || raw.startsWith("//")) {
+                        playbackUrl(raw, response.url)?.let(rawLinks::add)
                     }
-                } catch (e: Exception) { }
+                }
+            } catch (_: IllegalArgumentException) {
+                Log.w(name, "Invalid encoded source list")
             }
         }
-        return@coroutineScope true
+        val emitted = ConcurrentHashMap.newKeySet<String>()
+        val videoCallback: (ExtractorLink) -> Unit = { link ->
+            if (playbackUrl(link.url, link.url) != null && emitted.add(link.url)) callback(link)
+        }
+        rawLinks.map { url ->
+            launch(Dispatchers.IO) {
+                val host = URI(url).host.lowercase()
+                try {
+                    if (host.removePrefix("www.") in setOf("minochinos.com", "terbit2.com")) {
+                        // Retain the existing alias mapping, changing only the authority.
+                        // A signed query containing a hostname must remain byte-for-byte intact.
+                        val start = url.indexOf("://") + 3
+                        val fixedUrl = url.replaceRange(start, start + URI(url).rawAuthority.length, "streamwish.to")
+                        loadExtractor(fixedUrl, data, subtitleCallback, videoCallback)
+                    } else if (host.removePrefix("www.") in setOf("byse.sx", "bysebuho.com", "bysezejataos.com", "bysevepoin.com", "byseqekaho.com")) {
+                        ByseSXLocal().getUrl(url, data, subtitleCallback, videoCallback)
+                    } else {
+                        loadExtractor(url, data, subtitleCallback, videoCallback)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(name, "Source $host failed (${e.javaClass.simpleName})")
+                }
+            }
+        }.joinAll()
+        emitted.isNotEmpty()
     }
 }
+
+private fun playbackUrl(raw: String, base: String): String? = runCatching {
+    if (raw.isBlank()) return@runCatching null
+    URI(base).resolve(raw.trim()).takeIf {
+        it.scheme?.lowercase() in setOf("http", "https") && it.host != null && it.userInfo == null
+    }?.toString()
+}.getOrNull()
 
 // --- CLASS EXTRACTOR LOKAL (BYSE) ---
 open class ByseSXLocal : ExtractorApi() {
@@ -169,11 +197,11 @@ open class ByseSXLocal : ExtractorApi() {
     }
 
     private fun getBaseUrl(url: String): String {
-        return try { URI(url).let { "${it.scheme}://${it.host}" } } catch (e: Exception) { url }
+        return URI(url).let { "${it.scheme}://${it.rawAuthority}" }
     }
 
     private fun getCodeFromUrl(url: String): String {
-        return URI(url).path?.trimEnd('/')?.substringAfterLast('/') ?: ""
+        return URI(url).rawPath?.trimEnd('/')?.substringAfterLast('/') ?: ""
     }
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
@@ -181,18 +209,25 @@ open class ByseSXLocal : ExtractorApi() {
         val code = getCodeFromUrl(url)
         
         val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
-        val details = app.get(detailsUrl).parsedSafe<DetailsRoot>() ?: return
+        val detailsResponse = app.get(detailsUrl)
+        if (!detailsResponse.isSuccessful) { detailsResponse.body.close(); return }
+        val details = detailsResponse.parsedSafe<DetailsRoot>() ?: return
         
-        val embedFrameUrl = details.embedFrameUrl
+        val embedFrameUrl = playbackUrl(details.embedFrameUrl, url) ?: return
         val embedBase = getBaseUrl(embedFrameUrl)
         val embedCode = getCodeFromUrl(embedFrameUrl)
         
-        val playbackUrl = "$embedBase/api/videos/$embedCode/embed/playback"
-        val playbackHeaders = mapOf("accept" to "*/*", "referer" to embedFrameUrl, "x-embed-parent" to (referer ?: mainUrl))
-        val playback = app.get(playbackUrl, headers = playbackHeaders).parsedSafe<PlaybackRoot>()?.playback ?: return
+        val playbackApiUrl = "$embedBase/api/videos/$embedCode/embed/playback"
+        // Byse's API expects the original Byse embed URL as its parent (not the movie page).
+        val playbackHeaders = mapOf("accept" to "*/*", "referer" to embedFrameUrl, "x-embed-parent" to url)
+        val playbackResponse = app.get(playbackApiUrl, headers = playbackHeaders)
+        if (!playbackResponse.isSuccessful) { playbackResponse.body.close(); return }
+        val playback = playbackResponse.parsedSafe<PlaybackRoot>()?.playback ?: return
 
         try {
+            if (playback.keyParts.size < 2) return
             val keyBytes = b64UrlDecode(playback.keyParts[0]) + b64UrlDecode(playback.keyParts[1])
+            if (keyBytes.size !in setOf(16, 24, 32)) return
             val ivBytes = b64UrlDecode(playback.iv)
             val cipherBytes = b64UrlDecode(playback.payload)
             
@@ -202,9 +237,40 @@ open class ByseSXLocal : ExtractorApi() {
             var jsonStr = String(cipher.doFinal(cipherBytes), StandardCharsets.UTF_8)
             if (jsonStr.startsWith("\uFEFF")) jsonStr = jsonStr.substring(1)
             
-            val streamUrl = tryParseJson<PlaybackDecrypt>(jsonStr)?.sources?.firstOrNull()?.url ?: return
-            M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mapOf("Referer" to refererUrl)).forEach(callback)
-        } catch (e: Exception) { e.printStackTrace() }
+            val sources = tryParseJson<PlaybackDecrypt>(jsonStr)?.sources.orEmpty()
+            for (source in sources.distinctBy { it.url }) {
+                val streamUrl = playbackUrl(source.url, embedFrameUrl) ?: continue
+                val path = URI(streamUrl).path.orEmpty().lowercase()
+                val mime = source.mimeType.orEmpty()
+                val type = when {
+                    mime.contains("mpegurl", true) || path.endsWith(".m3u8") -> ExtractorLinkType.M3U8
+                    mime.contains("dash", true) || path.endsWith(".mpd") -> ExtractorLinkType.DASH
+                    mime.contains("mp4", true) || path.endsWith(".mp4") -> ExtractorLinkType.VIDEO
+                    mime.isBlank() -> ExtractorLinkType.M3U8 // Older Byse payloads omitted mime_type.
+                    else -> continue
+                }
+                try {
+                    val mediaHeaders = mapOf("Referer" to refererUrl)
+                    if (type == ExtractorLinkType.M3U8) {
+                        M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mediaHeaders).forEach(callback)
+                    } else {
+                        callback(newExtractorLink(name, name, streamUrl, type) {
+                            this.referer = refererUrl
+                            this.headers = mediaHeaders
+                            quality = source.height ?: getQualityFromName(source.quality ?: source.label.orEmpty())
+                        })
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(name, "Media source failed (${e.javaClass.simpleName})")
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(name, "Playback decode failed (${e.javaClass.simpleName})")
+        }
     }
 }
 
@@ -213,4 +279,10 @@ data class DetailsRoot(@JsonProperty("embed_frame_url") val embedFrameUrl: Strin
 data class PlaybackRoot(@JsonProperty("playback") val playback: Playback)
 data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>)
 data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
-data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
+data class PlaybackDecryptSource(
+    @JsonProperty("url") val url: String,
+    @JsonProperty("mime_type") val mimeType: String? = null,
+    @JsonProperty("quality") val quality: String? = null,
+    @JsonProperty("label") val label: String? = null,
+    @JsonProperty("height") val height: Int? = null
+)
