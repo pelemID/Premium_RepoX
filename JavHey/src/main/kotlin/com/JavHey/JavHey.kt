@@ -141,9 +141,10 @@ class JavHey : MainAPI() {
                 Log.w(name, "Invalid encoded source list")
             }
         }
-        val emitted = ConcurrentHashMap.newKeySet<String>()
+        val emitted = ConcurrentHashMap.newKeySet<List<Any>>()
         val videoCallback: (ExtractorLink) -> Unit = { link ->
-            if (playbackUrl(link.url, link.url) != null && emitted.add(link.url)) callback(link)
+            val key = listOf(link.url, link.referer, link.headers.toMap(), link.type, link.quality)
+            if (playbackUrl(link.url, link.url) != null && emitted.add(key)) callback(link)
         }
         rawLinks.map { url ->
             launch(Dispatchers.IO) {
@@ -157,6 +158,10 @@ class JavHey : MainAPI() {
                         loadExtractor(fixedUrl, data, subtitleCallback, videoCallback)
                     } else if (host.removePrefix("www.") in setOf("byse.sx", "bysebuho.com", "bysezejataos.com", "bysevepoin.com", "byseqekaho.com")) {
                         ByseSXLocal().getUrl(url, data, subtitleCallback, videoCallback)
+                    } else if (JavHeyPlayers.supports(host)) {
+                        if (!JavHeyPlayers.load(url, data, subtitleCallback, videoCallback)) {
+                            loadExtractor(url, data, subtitleCallback, videoCallback)
+                        }
                     } else {
                         loadExtractor(url, data, subtitleCallback, videoCallback)
                     }
@@ -210,7 +215,10 @@ open class ByseSXLocal : ExtractorApi() {
         
         val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
         val detailsResponse = app.get(detailsUrl)
-        if (!detailsResponse.isSuccessful) { detailsResponse.body.close(); return }
+        if (!detailsResponse.isSuccessful) {
+            Log.w(name, "Details API HTTP ${detailsResponse.code}")
+            detailsResponse.body.close(); return
+        }
         val details = detailsResponse.parsedSafe<DetailsRoot>() ?: return
         
         val embedFrameUrl = playbackUrl(details.embedFrameUrl, url) ?: return
@@ -221,7 +229,10 @@ open class ByseSXLocal : ExtractorApi() {
         // Byse's API expects the original Byse embed URL as its parent (not the movie page).
         val playbackHeaders = mapOf("accept" to "*/*", "referer" to embedFrameUrl, "x-embed-parent" to url)
         val playbackResponse = app.get(playbackApiUrl, headers = playbackHeaders)
-        if (!playbackResponse.isSuccessful) { playbackResponse.body.close(); return }
+        if (!playbackResponse.isSuccessful) {
+            Log.w(name, "Playback API HTTP ${playbackResponse.code}")
+            playbackResponse.body.close(); return
+        }
         val playback = playbackResponse.parsedSafe<PlaybackRoot>()?.playback ?: return
 
         try {
