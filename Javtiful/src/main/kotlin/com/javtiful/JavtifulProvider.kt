@@ -427,7 +427,8 @@ class JavtifulProvider : MainAPI() {
         PodjavSubtitles.load(
             PodjavSubtitles.code(document.selectFirst(".front-watch-title h1, .watch-title h1, h1")?.text().orEmpty(), data),
             videoLabel(data) == "[UN]",
-            subtitleCallback
+            subtitleCallback,
+            allowAlternateVariant = videoLabel(data) == "[RM]"
         )
         return emitted.isNotEmpty()
     }

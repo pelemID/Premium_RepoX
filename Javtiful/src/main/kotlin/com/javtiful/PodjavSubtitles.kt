@@ -39,25 +39,35 @@ internal object PodjavSubtitles {
     private fun parameter(url: String, key: String): String? =
         Regex("(?:^|&)$key=(\\d+)(?:&|$)").find(URI(url).rawQuery.orEmpty())?.groupValues?.get(1)
 
-    suspend fun load(code: String?, uncensored: Boolean, callback: (SubtitleFile) -> Unit) {
+    suspend fun load(code: String?, uncensored: Boolean, callback: (SubtitleFile) -> Unit,
+        allowAlternateVariant: Boolean = false) {
         if (code == null) return
         // Bound only this new optional lookup; existing video requests are untouched.
-        withTimeoutOrNull(10_000) { loadMatched(code, uncensored, callback) }
+        withTimeoutOrNull(10_000) { loadMatched(code, uncensored, callback, allowAlternateVariant) }
     }
 
-    private suspend fun loadMatched(code: String, uncensored: Boolean, callback: (SubtitleFile) -> Unit) {
+    private suspend fun loadMatched(code: String, uncensored: Boolean, callback: (SubtitleFile) -> Unit,
+        allowAlternateVariant: Boolean) {
         try {
             val search = app.get("$root/?s=${URLEncoder.encode(code, "UTF-8")}", referer = "$root/")
             if (!search.isSuccessful) { search.body.close(); return }
             if (siteUrl(search.url) == null) { search.body.close(); return }
-            val card = search.document.select("a.video-card").firstOrNull {
+            fun isUncensored(card: org.jsoup.nodes.Element): Boolean =
+                card.selectFirst("span.badge-uncen") != null ||
+                    card.attr("data-genre").split(Regex("\\s+")).any { genre -> genre.equals("uncensored", true) }
+            val cards = search.document.select("a.video-card").filter {
                 val title = it.selectFirst(".card-title")?.text()?.takeIf(String::isNotBlank)
                     ?: it.attr("data-title")
-                val isUncensored = it.selectFirst("span.badge-uncen") != null ||
-                    it.attr("data-genre").split(Regex("\\s+")).any { genre -> genre.equals("uncensored", true) }
-                !it.hasClass("banner-card") && matches(title, code) && isUncensored == uncensored &&
+                !it.hasClass("banner-card") && matches(title, code) &&
                     siteUrl(it.attr("href")) != null
-            } ?: return
+            }
+            // RM describes image processing, not a separate film code. Prefer the matching
+            // version, but expose an explicitly labelled alternative for manual selection.
+            val card = cards.firstOrNull { isUncensored(it) == uncensored }
+                ?: cards.firstOrNull().takeIf { allowAlternateVariant }
+                ?: return
+            val label = if (isUncensored(card) == uncensored) "by.podjav"
+                else if (isUncensored(card)) "by.podjav [UN]" else "by.podjav [Sensor]"
             val detailUrl = siteUrl(card.attr("href")) ?: return
             val response = app.get(detailUrl, referer = "$root/")
             if (!response.isSuccessful) { response.body.close(); return }
@@ -85,7 +95,7 @@ internal object PodjavSubtitles {
                     // PODJAV's subtitle.php serves VTT; the fragment is never sent to the server.
                     val vttUrl = url.substringBefore('#') + "#.vtt"
                     if (emitted.add(vttUrl)) {
-                        callback(newSubtitleFile("by.podjav", vttUrl) {
+                        callback(newSubtitleFile(label, vttUrl) {
                             headers = mapOf("Referer" to detailUrl, "Origin" to root)
                         })
                     }
