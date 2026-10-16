@@ -1313,7 +1313,9 @@ class MovieBoxProvider : MainAPI() {
                 val cacheKey = stream.url + "|" + headers.toSortedMap().toString()
                 if (valid == null) { failedUrls += cacheKey; continue }
                 validatedUrls[cacheKey] = valid.format
-                if (stream.id.isNotBlank()) captionIds.putIfAbsent(subject to stream.id, source to stream.audio)
+                val captionKey = subject to stream.id
+                if (stream.id.isNotBlank() && captionKey !in captionIds)
+                    captionIds[captionKey] = source to stream.audio
                 if (!emitted.add(MovieboxPlayback.key(stream))) continue
                 val type = when(valid.format) {
                     MovieboxPlayback.Format.DASH -> ExtractorLinkType.DASH
