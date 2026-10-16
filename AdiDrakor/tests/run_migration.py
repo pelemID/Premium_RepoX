@@ -35,9 +35,15 @@ for module, package in MODULES.items():
     port=port.replace(module+"MovieboxPlayback","MovieboxPlayback")
     port_flow=port[port.index("    fun getVideoInterceptor("):port.index("    suspend fun resolve(")]
     upstream_flow=upstream_flow.replace("override fun","fun").replace("override suspend fun","suspend fun")
-    port_flow=port_flow.replace(',\n        metadataContext: Map<String,JSONObject> = emptyMap()', '')
+    port_flow=port_flow.replace(',\n        metadataContext: Map<String,JSONObject> = emptyMap(),\n        onStage: (String) -> Unit = {}', '')
+    port_flow=port_flow.replace('            onStage(if(candidates.isEmpty()) "H5_NO_STREAM" else if(count==0) "H5_MEDIA_INVALID" else "PLAYBACK_SUCCESS")\n','')
     port_flow=port_flow.replace('            metadataContext[subject]?.takeIf { MovieboxPlayback.text(it,"subjectId")==subject }?.let { return it }\n','')
     assert port_flow.strip() == upstream_flow.strip(), "H5 flow/interceptor drift"
+    for suffix in ["Mapping", "Engine"]:
+        canonical=(ROOT / "AdiDrakor/src/main/kotlin/com/AdiDrakor" / ("AdiDrakorMoviebox"+suffix+".kt")).read_text()
+        actual=next(p for p in source if p.name==module+"Moviebox"+suffix+".kt").read_text()
+        actual=actual.replace(package,"com.AdiDrakor").replace(module+"Moviebox","AdiDrakorMoviebox").replace(module.lower()+"_moviebox_identity","adidrakor_moviebox_identity")
+        assert actual==canonical, "finder/interceptor/diagnostic parity drift"
     assert not (ROOT / "Adicinemax21/src/main/kotlin/com/lagradost/cloudstream3/utils").exists()
     with tempfile.TemporaryDirectory(prefix=f"{module}-h5-") as tmp:
         tmp = Path(tmp)

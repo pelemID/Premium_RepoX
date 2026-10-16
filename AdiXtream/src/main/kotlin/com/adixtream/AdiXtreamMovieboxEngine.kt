@@ -6,6 +6,8 @@ import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
@@ -25,6 +27,7 @@ import java.net.URI
 
 /** Local port of Moviebox H5 at 4a4d272. No catalog UI, plugin registration or cross-module state. */
 internal class AdiXtreamMovieboxEngine(private val name: String, private val tmdbApiKey: String? = null) {
+    private val catalogCache = AdiXtreamMovieboxMapping.CatalogCache()
     private val mainUrl = "https://api3.aoneroom.com"
     companion object {
         private const val TAG = "AdiXtreamMovieboxEngine"
@@ -176,7 +179,16 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
         }
     }
 
-    private suspend fun getBearerToken(): String? {
+    private val catalogSessionMutex=Mutex()
+    private var catalogSession: Pair<Long,String?>? = null
+    private suspend fun getBearerToken(): String? = catalogSessionMutex.withLock {
+        val now=System.nanoTime()/1_000_000
+        catalogSession?.takeIf { now-it.first in 0 until (if(it.second==null) 15_000 else 60_000) }?.let { return@withLock it.second }
+        val token=try { bootstrapCatalogBearer() } catch(e: CancellationException) { throw e } catch (_: Exception) { null }
+        catalogSession=(System.nanoTime()/1_000_000) to token
+        token
+    }
+    private suspend fun bootstrapCatalogBearer(): String? {
         val ts = System.currentTimeMillis().toString()
         val path = "/wefeed-mobile-bff/tab/ranking-list"
         val query = "page=1&perPage=1&tabId=0"
@@ -432,7 +444,8 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
-        metadataContext: Map<String,JSONObject> = emptyMap()
+        metadataContext: Map<String,JSONObject> = emptyMap(),
+        onStage: (String) -> Unit = {}
     ): Boolean {
         val selected = AppUtils.tryParseJson<EpData>(data) ?: return false
         if (!selected.subjectId.matches(Regex("[0-9]+")) || selected.se < 0 || selected.ep < 0) return false
@@ -535,6 +548,7 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
                 count++
             }
             Log.d(TAG, "[PLAYBACK-H5] subject=$subject parsed=${parsed.size} audioFiltered=${parsed.count { it.category == AdiXtreamMovieboxPlayback.AudioCategory.UNSUPPORTED }} candidates=${candidates.size} validated=$count se=$se ep=$ep")
+            onStage(if(candidates.isEmpty()) "H5_NO_STREAM" else if(count==0) "H5_MEDIA_INVALID" else "PLAYBACK_SUCCESS")
             return count
         }
         fun query(subject: String) = "subjectId=$subject&se=$se&ep=$ep"
@@ -637,102 +651,207 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
     }
 
 
+
     suspend fun resolve(titles: List<String>, year: Int?, type: Int, season: Int?, episode: Int?,
         subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit,
         tmdbId: String? = null, imdbId: String? = null, overview: String? = null,
         runtimeMinutes: Int? = null, castNames: List<String> = emptyList()): Boolean {
-        val completed = withTimeoutOrNull(150_000) {
+        val started=System.nanoTime()
+        fun report(stage: String, reason: String, candidates: Int = 0, verified: Int = 0) {
+            Log.d(TAG,"[FINDER] stage=$stage reason=$reason candidates=$candidates verified=$verified elapsedMs=${(System.nanoTime()-started)/1_000_000} type=$type se=$season ep=$episode")
+        }
+        val completed=withTimeoutOrNull(90_000) {
             try {
-                var request = AdiXtreamMovieboxMapping.Request(titles,year,type,season,episode,
-                    tmdbId,imdbId,overview,runtimeMinutes,castNames)
-                if(tmdbId!=null && tmdbApiKey!=null) {
-                    val kind=if(type==1) "movie" else "tv"
-                    val yearKey=if(type==1) "year" else "first_air_date_year"
-                    val query=URLEncoder.encode(titles.firstOrNull().orEmpty(),"UTF-8")
-                    val url="https://api.themoviedb.org/3/search/$kind?api_key=$tmdbApiKey&query=$query&$yearKey=$year&language=en-US"
-                    val raw=try { app.get(url,timeout=5).takeIf { it.code==200 }?.text }
-                        catch(e: CancellationException) { throw e } catch (_: Exception) { null }
-                    request=request.copy(works=AdiXtreamMovieboxMapping.tmdbWorks(raw,request))
-                }
-                if (!AdiXtreamMovieboxMapping.valid(request)) {
-                    Log.d(TAG,"[MAPPING] INSUFFICIENT_TMDB_IDENTITY")
-                    return@withTimeoutOrNull false
-                }
-                val bearer=try { getBearerToken() } catch(e: CancellationException) { throw e }
-                    catch (_: Exception) { null }
-                // Public Moviebox catalog discovery needs no mobile session. Playback remains H5.
-                val catalog="https://moviebox.ph"
-                val catalogRows=linkedMapOf<String,JSONObject>()
-                val webHeaders=mapOf("User-Agent" to AdiXtreamMovieboxPlayback.WEB_UA,"Referer" to "$catalog/")
-                suspend fun page(url: String): String? = playbackRequest(url,webHeaders)
-                    ?.takeIf { it.first==200 }?.second
-                suspend fun read(id: String, endpoint: String): String? {
-                    var mobile: String?=null
-                    if(bearer!=null) {
-                        val ts=System.currentTimeMillis().toString()
-                        val path="/wefeed-mobile-bff/subject-api/$endpoint?subjectId=$id"
-                        mobile=playbackRequest("$mainUrl$path",headersFor(ts,generateSignature("GET",path,ts),bearer))
-                            ?.takeIf { it.first==200 }?.second
-                        if(endpoint!="get" && mobile!=null) return mobile
+                coroutineScope {
+                    var request=AdiXtreamMovieboxMapping.Request(titles,year,type,season,episode,
+                        tmdbId,imdbId,overview,runtimeMinutes,castNames)
+                    if(!AdiXtreamMovieboxMapping.valid(request)) { report("identity","NO_CANDIDATE");return@coroutineScope false }
+                    val bearer=async {
+                        withTimeoutOrNull(2500) {
+                            try { getBearerToken() } catch(e: CancellationException) { throw e } catch (_: Exception) { null }
+                        }.also { if(it==null) report("auth","AUTH_UNAVAILABLE") }
                     }
-                    if(endpoint!="get") return null
-                    val row=catalogRows[id] ?: return mobile
-                    val path=AdiXtreamMovieboxPlayback.detailPath(row,id)
-                    if(!path.matches(Regex("[A-Za-z0-9_-]{1,220}"))) return mobile
-                    val html=page("$catalog/moviedetail/$path?id=$id&type=/movie/detail") ?: return mobile
-                    val meta=AdiXtreamMovieboxMapping.catalogPage(html).firstOrNull { AdiXtreamMovieboxPlayback.text(it,"subjectId")==id }
-                        ?: return mobile
-                    val identity=AdiXtreamMovieboxMapping.subject(meta)
-                    if(identity==null || !AdiXtreamMovieboxMapping.matches(request,identity)) return mobile
-                    val combined=AdiXtreamMovieboxMapping.mergeMetadata(AdiXtreamMovieboxPlayback.metadata(mobile,id),meta)
-                    return JSONObject().put("code",0).put("data",combined).toString()
-                }
-                var publicDiscoveryAttempted=false
-                val match=AdiXtreamMovieboxMapping.resolve(request,
-                    search = { title ->
-                        var raw: String?=null
-                        if(bearer!=null) {
-                            val body=JSONObject().put("page",1).put("perPage",20).put("keyword",title).put("tabId","").toString()
-                            raw=postSigned("/wefeed-mobile-bff/subject-api/search/v2",body,bearer)
+                    val catalog="https://moviebox.ph"
+                    val catalogRows=java.util.concurrent.ConcurrentHashMap<String,JSONObject>()
+                    val webHeaders=mapOf("User-Agent" to AdiXtreamMovieboxPlayback.WEB_UA,"Referer" to "$catalog/")
+                    suspend fun page(url: String): String? = withTimeoutOrNull(6000) {
+                        playbackRequest(url,webHeaders)?.takeIf { it.first==200 }?.second
+                    }
+                    val primaryPublic=async {
+                        val title=titles.first()
+                        val key="search:$type:${tmdbId.orEmpty()}:$title"
+                        catalogCache.get(key) ?: page("$catalog/web/searchResult?keyword=${URLEncoder.encode(title,"UTF-8")}")
+                            ?.let { AdiXtreamMovieboxMapping.catalogSearch(it) }?.also { catalogCache.put(key,it) }
+                    }
+                    suspend fun native(id: String, endpoint: String): String? {
+                        val token=bearer.await() ?: return null
+                        val path="/wefeed-mobile-bff/subject-api/$endpoint?subjectId=$id"
+                        val ts=System.currentTimeMillis().toString()
+                        return withTimeoutOrNull(5000) {
+                            playbackRequest("$mainUrl$path",headersFor(ts,generateSignature("GET",path,ts),token))
+                                ?.takeIf { it.first==200 }?.second
                         }
-                        val native=AdiXtreamMovieboxMapping.searchObjects(raw)
-                        val hasIdentity=AdiXtreamMovieboxMapping.parseSearch(raw).any { item ->
-                            (item.year==null || item.year==year) && (item.type !in 1..2 || item.type==type) &&
-                                titles.any { AdiXtreamMovieboxMapping.normalize(it)==AdiXtreamMovieboxMapping.normalize(item.title) }
+                    }
+                    var discoveryBudget=35_000L
+                    suspend fun discover(block: suspend () -> AdiXtreamMovieboxMapping.Result): AdiXtreamMovieboxMapping.Result? {
+                        if(discoveryBudget<=0) return null
+                        val before=System.nanoTime()
+                        return try { withTimeoutOrNull(discoveryBudget) { block() } }
+                            finally { discoveryBudget-=(System.nanoTime()-before)/1_000_000 }
+                    }
+                    var rediscover: (suspend (Set<String>) -> AdiXtreamMovieboxMapping.Result)? = null
+                    val discovery=discover {
+                        // Old saved playback payloads may lack synopsis/cast. Hydrate only the
+                        // selected TMDB ID, never the first search result or an inferred work.
+                        if(tmdbId!=null && tmdbApiKey!=null) {
+                            val kind=if(type==1) "movie" else "tv"
+                            if(request.tmdbId!=null) {
+                                val metadataKey="tmdb:$kind:$tmdbId"
+                                val raw=catalogCache.get(metadataKey) ?: withTimeoutOrNull(5000) {
+                                    try { app.get("https://api.themoviedb.org/3/$kind/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,external_ids,alternative_titles&language=en-US",timeout=5)
+                                        .takeIf { it.code==200 }?.text }
+                                    catch(e: CancellationException) { throw e } catch (_: Exception) { null }
+                                }
+                                raw?.let { catalogCache.put(metadataKey,it) }
+                                val meta=try { JSONObject(raw ?: "{}") } catch (_: Exception) { JSONObject() }
+                                if(AdiXtreamMovieboxPlayback.text(meta,"id")==tmdbId) {
+                                    val extra=meta.optJSONObject("external_ids")
+                                    val aliases=meta.optJSONObject("alternative_titles")
+                                    request=request.copy(
+                                        year=request.year ?: AdiXtreamMovieboxPlayback.text(meta,if(type==1) "release_date" else "first_air_date").take(4).toIntOrNull(),
+                                        imdbId=request.imdbId ?: extra?.optString("imdb_id")?.takeIf { it.matches(Regex("tt[0-9]{5,12}")) },
+                                        overview=AdiXtreamMovieboxPlayback.text(meta,"overview").takeIf { it.isNotBlank() } ?: request.overview,
+                                        castNames=(request.castNames+AdiXtreamMovieboxPlayback.objects(meta.optJSONObject("credits")?.optJSONArray("cast")).take(8).map { AdiXtreamMovieboxPlayback.text(it,"name") }).distinct(),
+                                        runtimeMinutes=request.runtimeMinutes ?: meta.optInt("runtime",0).takeIf { it>0 },
+                                        titles=(request.titles+listOf("title","original_title","name","original_name").map { AdiXtreamMovieboxPlayback.text(meta,it) }+
+                                            AdiXtreamMovieboxPlayback.objects(aliases?.optJSONArray("titles") ?: aliases?.optJSONArray("results")).map { AdiXtreamMovieboxPlayback.text(it,"title") }).filter { it.isNotBlank() }.distinct())
+                                }
+                            }
+                            val q=URLEncoder.encode(request.titles.first(),"UTF-8")
+                            val yearKey=if(type==1) "year" else "first_air_date_year"
+                            val yearQuery=request.year?.let { "&$yearKey=$it" }.orEmpty()
+                            val raw=withTimeoutOrNull(5000) {
+                                try { app.get("https://api.themoviedb.org/3/search/$kind?api_key=$tmdbApiKey&query=$q$yearQuery&language=en-US",timeout=5).takeIf { it.code==200 }?.text }
+                                catch(e: CancellationException) { throw e } catch (_: Exception) { null }
+                            }
+                            request=request.copy(works=AdiXtreamMovieboxMapping.tmdbWorks(raw,request))
                         }
-                        // Discover H5 paths even when native search succeeds: native detail can
-                        // omit the web context that the standalone provider obtains later.
-                        if(!publicDiscoveryAttempted || !hasIdentity) {
-                            val html=page("$catalog/web/searchResult?keyword=${URLEncoder.encode(title,"UTF-8")}")
-                            if(html!=null) {
-                                val rows=AdiXtreamMovieboxMapping.catalogPage(html)
-                                if(rows.isNotEmpty()) {
-                                    publicDiscoveryAttempted=true
-                                    rows.forEach { catalogRows[AdiXtreamMovieboxPlayback.text(it,"subjectId")]=it }
-                                    raw=JSONObject().put("code",0).put("data",JSONObject().put("items",
-                                        org.json.JSONArray(native+rows))).toString()
+                        val details=java.util.concurrent.ConcurrentHashMap<String,String>()
+                        val detailAttempts=java.util.concurrent.ConcurrentHashMap<String,Int>()
+                        val searches=mutableMapOf<Pair<String,Int>,String?>()
+                        val seasonReads=mutableMapOf<String,String?>()
+                        suspend fun read(id: String): String? {
+                            details[id]?.let { return it }
+                            if((detailAttempts[id] ?: 0)>=2) return null
+                            detailAttempts[id]=(detailAttempts[id] ?: 0)+1
+                            return coroutineScope {
+                                val mobile=async { native(id,"get") }
+                                val row=catalogRows[id]
+                                val path=row?.let { AdiXtreamMovieboxPlayback.detailPath(it,id) }.orEmpty()
+                                // Native and public detail are alternatives for the SAME subject.
+                                val web=if(path.matches(Regex("[A-Za-z0-9_-]{1,220}"))) {
+                                    val key="detail:$id:$path"
+                                    val cached=catalogCache.get(key)
+                                    if(cached!=null) JSONObject(cached) else {
+                                        val html=page("$catalog/moviedetail/$path?id=$id&type=/movie/detail")
+                                        html?.let { AdiXtreamMovieboxMapping.catalogPage(it).firstOrNull { item -> AdiXtreamMovieboxPlayback.text(item,"subjectId")==id } }
+                                            ?.also { catalogCache.put(key,it.toString()) }
+                                    }
+                                } else null
+                                val native=AdiXtreamMovieboxPlayback.metadata(mobile.await(),id)
+                                val combined=if(web!=null) AdiXtreamMovieboxMapping.mergeMetadata(native,web) else native
+                                combined?.let { meta ->
+                                    AdiXtreamMovieboxPlayback.objects(meta.optJSONArray("dubs")).forEach { dub ->
+                                        val did=AdiXtreamMovieboxPlayback.text(dub,"subjectId")
+                                        if(did.matches(Regex("[0-9]+"))) catalogRows.putIfAbsent(did,dub)
+                                    }
+                                    JSONObject().put("code",0).put("data",meta).toString().also { details[id]=it }
                                 }
                             }
                         }
-                        raw
-                    }, detail = { read(it,"get") }, seasons = { read(it,"season-info") })
-                val subject=match.subject
-                if(subject==null) {
-                    Log.d(TAG,"[MAPPING] ${match.reason} type=$type se=$season ep=$episode")
-                    return@withTimeoutOrNull false
+                        suspend fun search(title: String, number: Int): String? {
+                            val key=title to number
+                            if(searches.containsKey(key)) return searches[key]
+                            return coroutineScope {
+                                val native=async {
+                                    val token=bearer.await()
+                                    if(token==null) null else withTimeoutOrNull(5000) {
+                                        val body=JSONObject().put("page",number).put("perPage",20).put("keyword",title).put("tabId","").toString()
+                                        postSigned("/wefeed-mobile-bff/subject-api/search/v2",body,token)
+                                    }
+                                }
+                                val public=if(number==1) {
+                                    val key="search:$type:${tmdbId.orEmpty()}:$title"
+                                    if(title==titles.first()) primaryPublic.await() else catalogCache.get(key) ?: page("$catalog/web/searchResult?keyword=${URLEncoder.encode(title,"UTF-8")}")
+                                        ?.let { AdiXtreamMovieboxMapping.catalogSearch(it) }?.also { catalogCache.put(key,it) }
+                                } else null
+                                val web=AdiXtreamMovieboxMapping.searchObjects(public)
+                                web.forEach { catalogRows[AdiXtreamMovieboxPlayback.text(it,"subjectId")]=it }
+                                val raw=native.await()
+                                val rows=(AdiXtreamMovieboxMapping.searchObjects(raw)+web).groupBy { AdiXtreamMovieboxPlayback.text(it,"subjectId") }
+                                    .values.map { group -> group.reduce { a,b -> AdiXtreamMovieboxMapping.mergeMetadata(a,b) } }
+                                val result=if(public==null && rows.isEmpty()) raw else JSONObject().put("code",0).put("data",JSONObject()
+                                    .put("items",org.json.JSONArray(rows)).put("pager",JSONObject().put("hasMore",AdiXtreamMovieboxMapping.hasMore(raw)))).toString()
+                                searches[key]=result
+                                result
+                            }
+                        }
+                        rediscover={ excluded ->
+                            AdiXtreamMovieboxMapping.resolve(request.copy(excludedSubjects=excluded),{search(it,1)},{read(it)},
+                                { id ->
+                                    if(!seasonReads.containsKey(id)) seasonReads[id]=native(id,"season-info")
+                                    seasonReads[id]
+                                },{title,number -> search(title,number)})
+                        }
+                        rediscover!!(emptySet())
+                    }
+                    if(discovery==null) { report("discovery","SEARCH_TIMEOUT");return@coroutineScope false }
+                    val subject=discovery.subject
+                    if(subject==null) {
+                        val reason=when(discovery.reason) {
+                            "SEARCH_API_FAILED","SEARCH_API_INVALID","SEARCH_API_REJECTED" -> "TITLE_DISCOVERY_FAILED"
+                            "SUBJECT_NOT_FOUND_OR_IDENTITY_MISMATCH" -> "NO_CANDIDATE"
+                            "AMBIGUOUS_SUBJECT","AMBIGUOUS_TMDB_WORK","TMDB_IDENTITY_UNVERIFIED" -> "IDENTITY_AMBIGUOUS"
+                            "SUBJECT_DETAIL_UNAVAILABLE" -> "DETAIL_UNAVAILABLE"
+                            else -> discovery.reason
+                        }
+                        report("identity",reason,discovery.candidates,discovery.verified)
+                        return@coroutineScope false
+                    }
+                    report("identity","VERIFIED",discovery.candidates,discovery.verified)
+                    var current: AdiXtreamMovieboxMapping.Result=discovery
+                    val attempted=mutableSetOf<String>()
+                    while(attempted.size<3) {
+                        val editions=current.editions.ifEmpty { listOfNotNull(current.metadata?.let { AdiXtreamMovieboxMapping.Edition(current.subject ?: subject,it) }) }
+                            .filter { it.subject.id !in attempted }.take(3-attempted.size)
+                        if(editions.isEmpty()) break
+                        for(edition in editions) {
+                            attempted+=edition.subject.id
+                            val selected=EpData(edition.subject.id,if(type==1) 0 else season!!,if(type==1) 0 else episode!!,type)
+                            val context=mapOf(edition.subject.id to AdiXtreamMovieboxMapping.playbackMetadata(edition.metadata))
+                            var h5Reason="H5_NO_STREAM"
+                            val played=loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback,context) { stage ->
+                                if(stage=="H5_MEDIA_INVALID" || h5Reason!="H5_MEDIA_INVALID") h5Reason=stage
+                            }
+                            report("h5",if(played) "PLAYBACK_SUCCESS" else h5Reason,current.candidates,current.verified)
+                            if(played) return@coroutineScope true
+                        }
+                        // A verified identity without usable media is not a completed search.
+                        // Continue remaining aliases/pages with request-local IO deduplication;
+                        // every later edition must independently pass the SAME identity gate.
+                        if(attempted.size>=3) break
+                        val next=discover { rediscover!!(attempted.toSet()) } ?: break
+                        if(next.subject==null) break
+                        current=next
+                    }
+                    false
                 }
-                Log.d(TAG,"[MAPPING] verified subject=${subject.id} type=$type year=${subject.year} identity=${match.metadata?.let { AdiXtreamMovieboxMapping.identity(request,it) }} detailPath=${match.metadata?.has("detailPath")==true}")
-                val selected=EpData(subject.id,if(type==1) 0 else season!!,if(type==1) 0 else episode!!,type)
-                val context=match.metadata?.takeIf { AdiXtreamMovieboxPlayback.detailPath(it,subject.id).isNotBlank() }
-                    ?.let { mapOf(subject.id to AdiXtreamMovieboxMapping.playbackMetadata(it)) }.orEmpty()
-                loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback,context)
-            } catch(e: CancellationException) { throw e
-            } catch(e: Exception) {
-                Log.d(TAG,"[MAPPING] ${e.javaClass.simpleName}")
+            } catch(e: CancellationException) { throw e } catch(e: Exception) {
+                report("discovery","DETAIL_UNAVAILABLE")
                 false
             }
         }
-        if(completed==null) Log.d(TAG,"[MAPPING] TIMEOUT")
+        if(completed==null) report("h5","SEARCH_TIMEOUT")
         return completed ?: false
     }
 

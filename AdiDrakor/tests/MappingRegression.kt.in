@@ -77,7 +77,7 @@ fun main() = runBlocking {
         val tv=movie.copy(type=2)
         val got=MATCHER.resolve(r.copy(type=2,season=2,episode=4),{search(tv)},{detail(tv)},{seasons})
         check(got.subject == tv)
-        check(MATCHER.resolve(r.copy(type=2,season=9,episode=4),{search(tv)},{detail(tv)},{seasons}).reason == "SEASON_OR_EPISODE_UNAVAILABLE")
+        check(MATCHER.resolve(r.copy(type=2,season=9,episode=4),{search(tv)},{detail(tv)},{seasons}).reason == "EPISODE_NOT_AVAILABLE")
     }
     test("API failure and malformed response return diagnostics") {
         check(MATCHER.resolve(r,{null},{detail()},{seasons}).reason == "SEARCH_API_FAILED")
@@ -239,7 +239,7 @@ fun main() = runBlocking {
     test("observed Spider-Man metadata maps to the selected TMDB work without switching film") {
         val meta=JSONObject(java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-detail.json").readText()).getJSONObject("data")
         val req=MATCHER.Request(listOf("Spider-Man: Brand New Day"),2026,1,null,null,
-            tmdbId="969681",works=listOf(MATCHER.Work("969681","")))
+            tmdbId="969681",overview=meta.getString("description"),works=listOf(MATCHER.Work("969681","")))
         val observed=MATCHER.subject(meta)!!
         val got=MATCHER.resolve(req,{catalog(meta)},{envelope(meta)},{null})
         check(got.subject==observed && observed.id=="6026412232966389904")
@@ -249,6 +249,148 @@ fun main() = runBlocking {
     test("invalid Nuxt reference graph and script text are never executed") {
         check(MATCHER.catalogPage("<script id=__NUXT_DATA__ type=application/json>[{\"subjectId\":0,\"title\":0}]</script>").isEmpty())
         check(MATCHER.catalogPage("<script>throw new Error('no')</script>").isEmpty())
+    }
+
+    val hotd=JSONObject(java.io.File(System.getProperty("migration.fixtures"),"hotd-public-detail.json").readText()).getJSONObject("data")
+    val hotdOther=JSONObject(java.io.File(System.getProperty("migration.fixtures"),"hotd-edition-public-detail.json").readText()).getJSONObject("data")
+    val hotdRequest=MATCHER.Request(listOf("House of the Dragon"),2022,2,1,1,tmdbId="94997",
+        overview=hotd.getString("description"),castNames=listOf("Matt Smith","Emma D'Arcy","Olivia Cooke"))
+    test("public detail binds season resource and stars to owning subject only") {
+        val decoded=MATCHER.catalogPage(java.io.File(System.getProperty("migration.fixtures"),"hotd-public-nuxt.html").readText()).single()
+        check(decoded.getString("subjectId")==hotd.getString("subjectId"))
+        check(decoded.getJSONArray("staffList").length()>2)
+        check(decoded.getJSONArray("catalogSeasons").getJSONObject(0).getInt("maxEp")==10)
+        check(!MATCHER.catalogPage(java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-nuxt.html").readText()).single().has("catalogSeasons"))
+    }
+    test("House of the Dragon S1E1 and S2E4 survive unavailable mobile season-info") {
+        for(req in listOf(hotdRequest,hotdRequest.copy(season=2,episode=4))) {
+            val got=MATCHER.resolve(req,{catalog(hotd)},{envelope(hotd)},{null})
+            check(got.subject?.id==hotd.getString("subjectId"))
+        }
+        check(MATCHER.resolve(hotdRequest.copy(season=2,episode=9),{catalog(hotd)},{envelope(hotd)},{null}).subject==null)
+        check(MATCHER.resolve(hotdRequest.copy(season=4,episode=1),{catalog(hotd)},{envelope(hotd)},{null}).subject==null)
+    }
+    test("explicit mobile episode negative overrides public range; missing range never guessed") {
+        check(MATCHER.episodeStatus("""{"code":0,"data":{"seasons":[{"se":1,"maxEp":0}]}}""",hotd,hotd.getString("subjectId"),1,1)=="EPISODE_NOT_AVAILABLE")
+        check(MATCHER.episodeStatus(null,JSONObject(hotd.toString()).apply {remove("catalogSeasons")},hotd.getString("subjectId"),1,1)=="SEASON_NOT_VERIFIED")
+        check(MATCHER.episodeStatus(null,hotd,"999",1,1)=="SEASON_NOT_VERIFIED")
+    }
+    test("two independently verified same-work editions may recover playback without conflating unrelated works") {
+        val got=MATCHER.resolve(hotdRequest,{catalog(hotd,hotdOther)},
+            {envelope(if(it==hotd.getString("subjectId")) hotd else hotdOther)},{null})
+        check(got.editions.size==2)
+        val unrelated=JSONObject(hotdOther.toString()).put("description","unrelated story").put("staffList",org.json.JSONArray()).put("tmdbId","999")
+        val safe=MATCHER.resolve(hotdRequest,{catalog(hotd,unrelated)},
+            {envelope(if(it==hotd.getString("subjectId")) hotd else unrelated)},{null})
+        check(safe.editions.size==1 && safe.subject?.id==hotd.getString("subjectId"))
+    }
+    test("yearless selected work requires external ID or independent detail proof") {
+        val noYear=target.copy(year=null,works=null)
+        check(MATCHER.valid(noYear))
+        check(MATCHER.resolve(noYear,{search()},{envelope(item().put("tmdbId","10"))},{null}).subject==movie)
+        check(MATCHER.resolve(noYear,{search()},{detail()},{null}).subject==null)
+        check(MATCHER.resolve(hotdRequest.copy(year=null),{catalog(hotd)},{envelope(hotd)},{null}).subject!=null)
+    }
+    test("title-year uniqueness is discovery evidence only; never enough to authorize playback") {
+        check(MATCHER.identity(target,item())=="TMDB_UNIQUE_WORK")
+        check(MATCHER.resolve(target,{search()},{detail()},{null}).subject==null)
+    }
+    test("truncated TMDB search cannot establish uniqueness but independent IDs still verify") {
+        val req=target.copy(works=MATCHER.tmdbWorks("""{"total_pages":3,"results":[]}""",target))
+        check(req.works==null)
+        check(MATCHER.resolve(req,{search()},{envelope(item().put("tmdbId","10"))},{null}).subject==movie)
+    }
+    test("native search pagination examines later candidate before selecting; bounded at three pages") {
+        var pages=mutableListOf<Int>()
+        val first=catalog(item()).let { JSONObject(it).apply { getJSONObject("data").put("pager",JSONObject().put("hasMore",true)) }.toString() }
+        val got=MATCHER.resolve(r,{first},{id -> detail(movie.copy(id=id))},{null},
+            {_,page -> pages.add(page);catalog(item(movie.copy(id="124")))})
+        check(got.subject==null && pages.contains(2))
+        pages.clear()
+        MATCHER.resolve(r,{first},{detail()},{null},{_,page -> pages.add(page);first})
+        check(pages.all { it in 2..3 } && pages.size<=24)
+    }
+    test("late official alternative title is searched with a prioritized bounded planner") {
+        val aliases=(1..8).map { "International Official Name Variant $it" }
+        val req=target.copy(titles=listOf("Primary Name","Original Name")+aliases)
+        check(MATCHER.queries(req).contains(aliases.last()))
+        val meta=item().put("title",aliases.last()).put("tmdbId","10")
+        check(MATCHER.resolve(req,{q -> if(q==aliases.last()) catalog(meta) else catalog()},{envelope(meta)},{null}).subject?.id=="123")
+        check(MATCHER.queries(req).size<=12)
+    }
+    test("Unicode compatibility punctuation and apostrophes keep full-work identity") {
+        check(MATCHER.normalize("Ｓｐｉｄｅｒ—Ｍａｎ")=="spider man")
+        check(!MATCHER.matches(r,movie.copy(title="Example's Sequel")))
+    }
+    test("Spider-Man No Way Home and franchise variants never authorize Brand New Day") {
+        val req=MATCHER.Request(listOf("Spider-Man: Brand New Day"),2026,1,null,null,tmdbId="969681")
+        val other=movie.copy(title="Spider-Man: No Way Home",year=2021)
+        var details=0
+        check(MATCHER.resolve(req,{search(other)},{details++;detail(other)},{null}).subject==null)
+        check(details==0)
+        check(MATCHER.resolve(req,{search(other.copy(year=2026))},{detail(other.copy(year=2026))},{null}).subject==null)
+    }
+    test("nested external ID conflicts survive metadata merging") {
+        val merged=MATCHER.mergeMetadata(item().put("externalIds",JSONObject().put("tmdbId","10")),
+            JSONObject().put("externalIds",JSONObject().put("tmdbId","11")))
+        check(MATCHER.identity(target,merged)=="EXTERNAL_ID_CONFLICT")
+    }
+    test("metadata cache uses exact keys and expires without retaining playback decisions") {
+        var now=0L
+        val cache=MATCHER.CatalogCache(30) { now }
+        cache.put("movie:10:Example","a");cache.put("tv:10:Example","b");cache.put("movie:11:Example","c")
+        check(cache.get("movie:10:Example")=="a" && cache.get("tv:10:Example")=="b")
+        check(cache.get("movie:11:Example")=="c")
+        now=31;check(cache.get("movie:10:Example")==null)
+    }
+    test("detail failure is not replaced by search metadata or a different film") {
+        var calls=0
+        check(MATCHER.resolve(target,{search()},{calls++;null},{null}).subject==null)
+        check(calls<=2)
+    }
+
+    test("later series edition year needs both cast plot and explicit requested season; never renumbers") {
+        val later=JSONObject(hotd.toString()).put("releaseDate","2024-06-16")
+        val req=hotdRequest.copy(season=2,episode=4)
+        check(MATCHER.resolve(req,{catalog(later)},{envelope(later)},{null}).subject!=null)
+        val wrong=JSONObject(later.toString()).put("description","unrelated remake story")
+        check(MATCHER.resolve(req,{catalog(wrong)},{envelope(wrong)},{null}).subject==null)
+        check(MATCHER.resolve(hotdRequest,{catalog(later)},{envelope(later)},{null}).subject==null)
+    }
+    test("detail concurrency is bounded and repeated aliases never create unlimited retries") {
+        var active=0;var max=0;var calls=0
+        val items=(1..4).map { item(movie.copy(id=it.toString())) }.toTypedArray()
+        val got=MATCHER.resolve(r,{catalog(*items)},{id ->
+            calls++;active++;max=maxOf(max,active);delay(10);active--;detail(movie.copy(id=id))
+        },{null})
+        check(got.subject==null && max in 2..3 && calls<=8)
+    }
+    test("a correct later native page is verified without first-result selection") {
+        val first=JSONObject(catalog(item(movie.copy(title="Different Work"))))
+            .apply {getJSONObject("data").put("pager",JSONObject().put("hasMore",true))}.toString()
+        val got=MATCHER.resolve(target,{first},{envelope(item().put("tmdbId","10"))},{null},
+            {_,page -> check(page==2);catalog(item())})
+        check(got.subject==movie)
+    }
+    test("same-name movie TV and wrong year fail even with plausible cast") {
+        val meta=item(movie.copy(year=2021)).put("staffList",org.json.JSONArray()
+            .put(JSONObject().put("name","Actor A")).put(JSONObject().put("name","Actor B")))
+        val req=target.copy(castNames=listOf("Actor A","Actor B"))
+        check(MATCHER.resolve(req,{catalog(meta)},{envelope(meta)},{null}).subject==null)
+        check(MATCHER.resolve(req,{catalog(item(movie.copy(type=2)).put("tmdbId","10"))},
+            {envelope(item(movie.copy(type=2)).put("tmdbId","10"))},{null}).subject==null)
+    }
+
+    test("failed media subject can be excluded while later aliases still require full same-work proof") {
+        val req=target.copy(titles=listOf("Example","Official Alternate"),excludedSubjects=setOf("123"))
+        val later=item(movie.copy(id="124")).put("tmdbId","10")
+        val first=item().put("tmdbId","10")
+        val got=MATCHER.resolve(req,{q -> catalog(if(q=="Official Alternate") later else first)},
+            {id -> envelope(if(id=="123") first else later)},{null})
+        check(got.subject?.id=="124" && got.editions.none { it.subject.id=="123" })
+        val bad=JSONObject(later.toString()).put("tmdbId","11")
+        check(MATCHER.resolve(req,{q -> catalog(if(q=="Official Alternate") bad else first)},
+            {id -> envelope(if(id=="123") first else bad)},{null}).subject==null)
     }
 
     val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
@@ -268,7 +410,7 @@ fun main() = runBlocking {
             req.url.host=="api.themoviedb.org" -> response(req,"""{"results":[{"id":1,"title":"Example","name":"Example","release_date":"2022-01-01","first_air_date":"2022-01-01"}]}""")
             req.url.encodedPath.endsWith("ranking-list") -> response(req,"{}",true)
             req.url.encodedPath.endsWith("search/v2") -> response(req,search(subject))
-            req.url.encodedPath.endsWith("/get") -> response(req,detail(subject))
+            req.url.encodedPath.endsWith("/get") -> response(req,envelope(raw(subject).put("tmdbId","1")))
             req.url.encodedPath.endsWith("season-info") -> response(req,seasons)
             req.url.encodedPath.endsWith("subject/play") -> response(req,"""{"code":0,"data":{"subjectId":"123","se":${if(tv) 2 else 0},"ep":${if(tv) 4 else 0},"streams":[{"id":"s1","url":"$media"}]}}""")
             else -> response(req,"{\"code\":0,\"data\":{}}")
@@ -294,7 +436,7 @@ fun main() = runBlocking {
             PlaybackApiFixture.requests.clear()
             PlaybackApiFixture.responder={ req ->
                 when {
-                    req.url.host=="api.themoviedb.org" -> response(req,"""{"results":[{"id":1291595,"title":"Insidious: Out of the Further","release_date":"2026-08-19"}]}""")
+                    req.url.host=="api.themoviedb.org" -> if(req.url.encodedPath.contains("/search/")) response(req,"""{"results":[{"id":1291595,"title":"Insidious: Out of the Further","release_date":"2026-08-19"}]}""") else response(req,JSONObject().put("id",1291595).put("overview",insidious.getString("description")).toString())
                     req.url.host=="moviebox.ph" -> {
                         check(req.header("Authorization")==null)
                         response(req,html)
@@ -319,7 +461,7 @@ fun main() = runBlocking {
             PlaybackApiFixture.requests.clear()
             PlaybackApiFixture.responder={ req ->
                 when {
-                    req.url.host=="api.themoviedb.org" -> response(req,"""{"results":[{"id":969681,"title":"Spider-Man: Brand New Day","release_date":"2026-07-29"}]}""")
+                    req.url.host=="api.themoviedb.org" -> if(req.url.encodedPath.contains("/search/")) response(req,"""{"results":[{"id":969681,"title":"Spider-Man: Brand New Day","release_date":"2026-07-29"}]}""") else response(req,JSONObject().put("id",969681).put("overview",JSONObject(java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-detail.json").readText()).getJSONObject("data").getString("description")).toString())
                     req.url.host=="moviebox.ph" -> {
                         if(req.url.encodedPath.contains("searchResult"))
                             check(req.url.queryParameter("keyword")=="Spider-Man: Brand New Day")
@@ -339,6 +481,62 @@ fun main() = runBlocking {
             check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
             check(links.single().source=="PROVIDER")
             check(PlaybackApiFixture.requests.count { it.url.encodedPath.contains("searchResult") }==1)
+        }
+        test("House of the Dragon MainAPI uses public seasons after mobile auth failure with exact requested indices") {
+            val html=java.io.File(System.getProperty("migration.fixtures"),"hotd-public-nuxt.html").readText()
+            for((se,ep) in listOf(1 to 1,2 to 4,2 to 9)) {
+                PlaybackApiFixture.requests.clear()
+                PlaybackApiFixture.responder={ req -> when {
+                    req.url.host=="api.themoviedb.org" -> response(req,JSONObject().put("id",94997).put("overview",hotd.getString("description")).toString())
+                    req.url.host=="moviebox.ph" -> response(req,html)
+                    req.url.encodedPath.endsWith("subject/play") -> {
+                        check(req.url.queryParameter("se")==se.toString() && req.url.queryParameter("ep")==ep.toString())
+                        check(req.url.queryParameter("subjectId")==hotd.getString("subjectId"))
+                        response(req,"""{"code":0,"data":{"subjectId":"${hotd.getString("subjectId")}","se":$se,"ep":$ep,"streams":[{"id":"s1","url":"$media"}]}}""")
+                    }
+                    else -> response(req,"{\"code\":403}").newBuilder().code(403).build()
+                } }
+                val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
+                val payload="""{"id":94997,"tmdbId":"94997","title":"House of the Dragon","year":2022,"airedYear":2022,"type":"tv","isTvSeries":true,"season":$se,"episode":$ep}"""
+                val played=PROVIDER().loadLinks(payload,false,subs::add,links::add)
+                check(played==(ep!=9))
+                if(ep==9) check(links.isEmpty() && PlaybackApiFixture.requests.none { it.url.encodedPath.endsWith("subject/play") })
+                else check(links.single().source=="PROVIDER")
+            }
+        }
+        test("MainAPI continues discovery after empty H5 and never recovers through a conflicting work") {
+            for(conflict in listOf(false,true)) {
+                PlaybackApiFixture.requests.clear()
+                PlaybackApiFixture.responder={ req -> when {
+                    req.url.host=="api.themoviedb.org" -> response(req,"{}")
+                    req.url.encodedPath.endsWith("ranking-list") -> response(req,"{}",true)
+                    req.url.encodedPath.endsWith("search/v2") -> {
+                        val buffer=okio.Buffer();req.body!!.writeTo(buffer)
+                        val query=JSONObject(buffer.readUtf8()).getString("keyword")
+                        response(req,search(movie.copy(id=if(query=="Official Alternate") "124" else "123")))
+                    }
+                    req.url.encodedPath.endsWith("/get") -> {
+                        val id=req.url.queryParameter("subjectId")!!
+                        response(req,envelope(item(movie.copy(id=id)).put("tmdbId",if(conflict && id=="124") "2" else "1")))
+                    }
+                    req.url.encodedPath.endsWith("subject/play") -> {
+                        val id=req.url.queryParameter("subjectId")!!
+                        check(!conflict || id!="124")
+                        response(req,if(id=="124") """{"code":0,"data":{"subjectId":"124","se":0,"ep":0,"streams":[{"id":"s1","url":"$media"}]}}"""
+                            else """{"code":0,"data":{"streams":[]}}""")
+                    }
+                    else -> response(req,"{}")
+                } }
+                val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
+                val payload="""{"id":1,"tmdbId":"1","title":"Example","year":2022,"type":"movie","isTvSeries":false,"alternativeTitles":["Official Alternate"]}"""
+                val played=PROVIDER().loadLinks(payload,false,subs::add,links::add)
+                check(played==!conflict)
+                if(conflict) check(links.isEmpty()) else check(links.single().source=="PROVIDER")
+                val queries=PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("search/v2") }.map { req ->
+                    val buffer=okio.Buffer();req.body!!.writeTo(buffer);JSONObject(buffer.readUtf8()).getString("keyword")
+                }
+                check(queries.size==2 && queries.distinct().size==2)
+            }
         }
     } finally {
         server.stop(0)

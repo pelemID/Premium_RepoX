@@ -114,3 +114,98 @@ truncation, sparse metadata, bounded retry and skipped unnecessary aliases.
 
 Alternative-title-only matches require corroboration even when the primary-title
 TMDB search has one result, preventing cross-film alias collisions.
+
+## Smart source finder V2 (recording 585571.mp4)
+
+The recording shows Spider-Man failing after a long spinner and House of the
+Dragon S1E1 failing. Device logs are unavailable, so the recording alone cannot
+identify the exact failing HTTP request. The code audit reproduced these gaps:
+mobile authentication gated discovery; native pagination was ignored; multiple
+original editions were treated as unrelated; TV required mobile season-info even
+when public detail contained authoritative resource.seasons. Public detail also
+places principal cast in the owning detail wrapper's stars array, not necessarily
+inside subject.staffList. These fields are now decoded only through that same
+subject/resource wrapper. Recommendation rows cannot supply another subject's
+season proof.
+
+The independent local engines now implement the same staged algorithm. There
+are at most twelve query-page operations, three native pages per query, thirty-two
+candidate IDs and two detail attempts per ID; detail prefetch concurrency is three
+(up to native/public pairs). Primary public discovery, mobile authentication and
+selected-TMDB metadata run concurrently. Discovery has a 35-second deadline and
+the entire resolution a 90-second deadline. These are ceilings, not measured
+Android loading times. Caller cancellation propagates.
+
+The planner prioritizes primary/original titles, normalized punctuation, then
+more distinctive official aliases, followed by a franchise discovery query.
+Pagination is followed only when the native response explicitly advertises it;
+no undocumented pagination is invented for public SSR. Results are deduplicated
+by subject ID and enriched with same-ID detail. Failure of one query/backend
+never grants playback permission or substitutes another title.
+
+Selected-TMDB detail is fetched by its exact typed ID, including English synopsis,
+cast and official aliases. The UI payload and catalog remain unchanged. Cached
+catalog/TMDB metadata lasts thirty seconds in an instance-local bounded map;
+identity decisions and signed media URLs are not cached. Authentication success
+and failure have short, separate lifetimes to avoid repeated bootstrap requests.
+
+External-ID conflicts, media-type mismatch and different complete titles remain hard rejects.
+Movie year differences require an external anchor. A later TV edition year requires
+both matching cast and a strong plot fingerprint plus an explicit requested season
+in same-subject public metadata; season 1 cannot use that exception. Missing years may be
+verified by exact external IDs or independent cast/plot evidence. Normalization
+uses Unicode NFKD and preserves full-title meaning. **TMDB title/year uniqueness
+is now discovery evidence only, never playback authorization for a selected TMDB
+request.** At least an exact external ID, two independently supplied principal
+cast names with title/type/year agreement, or a distinguishing content-word plot
+fingerprint is required. Plot proof requires eight shared meaningful words and
+50% overlap, or four shared words/25% plus agreeing runtime; it must beat known
+competing TMDB works by 15 percentage points. Contradictory external IDs always
+win over corroboration; a plot pointing to another known work and a grossly
+inconsistent movie runtime also reject. These conservative thresholds are covered
+by positive and wrong-work fixtures; they are not a universal accuracy guarantee.
+Old pure schema test requests without a selected TMDB ID retain the title/year
+helper contract; every registered MainAPI requires the real selected TMDB ID.
+
+Multiple IDs collapse through an explicit server-declared dub family only after
+the original passes verification. Separate original editions may be attempted
+(up to three) only if each independently verifies the selected work through ID,
+cast or plot evidence. A same-title/year coincidence cannot create an edition
+relationship. Playback stops after the first edition returns validated media. If all currently
+verified editions fail H5, discovery continues through remaining queries within
+the unused discovery budget. Request-local caches deduplicate search pages,
+same-ID detail and season reads; failed media subjects are excluded and every
+later edition still requires full verification.
+
+For TV, successful mobile season-info is preferred. An explicit negative cannot
+be overridden. When that endpoint is unavailable, the owning public detail's
+resource.seasons may prove the exact season/maxEp. H5 is still requested with the
+unchanged season and episode and its response/media are validated by the original
+port. No first-episode fallback, season renumbering or trailer substitution exists.
+
+H5 transport, signing, stream validation, media header scope, audio and subtitles
+remain identical to the reference after removing the additive metadata bridge
+and diagnostic observer. The runner asserts that equality and byte parity of the
+four algorithms, including diagnostics. Structured FINDER diagnostics report
+stage, reason, candidate/verified counts and elapsed milliseconds, without API
+keys, tokens, cookies or signed media URLs. H5_NO_STREAM and H5_MEDIA_INVALID
+are separated by an observer of the existing parser/validator result.
+
+Tests additionally replay observed public House of the Dragon originals, S1E1,
+S2E4, unavailable episodes, missing bearer, pagination ambiguity, missing selected
+year, external-ID conflicts, normalized and late official aliases, cache namespace
+collisions/expiration, and rejection of title/year-only authorization. The
+existing original suites still cover Reacher, DASH/HLS/direct media, expired
+signatures, audio, subtitle, scoped credentials and mismatched H5 episodes.
+Updated prior success fixtures now provide independently selected metadata;
+no negative safety assertion was removed to permit a weaker match.
+
+Optional live response probe (does not validate CDN media or device playback):
+
+```sh
+python3 AdiDrakor/tests/probe_finder_v2.py
+```
+
+Only public subject metadata is saved in fixtures; no signed media resources or
+session data are persisted. Fixture and local HTTP success must be reported
+separately from live H5 responses and actual Android playback.
