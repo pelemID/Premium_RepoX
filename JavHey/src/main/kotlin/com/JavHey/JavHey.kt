@@ -241,8 +241,16 @@ open class ByseSXLocal : ExtractorApi() {
         val playback = playbackResponse.parsedSafe<PlaybackRoot>()?.playback ?: return
 
         try {
-            if (playback.keyParts.size < 2) return
-            val keyBytes = b64UrlDecode(playback.keyParts[0]) + b64UrlDecode(playback.keyParts[1])
+            // The current Byse player selects the 1-based pair [v, 31-v]
+            // for versions "1".."20". Legacy/unknown versions concatenate all parts.
+            val version = (playback.version as? String)?.trim()
+            val position = version?.toIntOrNull()
+            val parts = playback.keyParts
+            val selected = if (position != null && position in 1..20 && position.toString() == version &&
+                position <= parts.size && 31 - position <= parts.size) {
+                listOf(parts[position - 1], parts[30 - position]).filter { it.isNotEmpty() }.ifEmpty { parts }
+            } else parts
+            val keyBytes = selected.filter { it.isNotEmpty() }.fold(ByteArray(0)) { bytes, part -> bytes + b64UrlDecode(part) }
             if (keyBytes.size !in setOf(16, 24, 32)) return
             val ivBytes = b64UrlDecode(playback.iv)
             val cipherBytes = b64UrlDecode(playback.payload)
@@ -293,7 +301,7 @@ open class ByseSXLocal : ExtractorApi() {
 // Data Classes untuk JSON Parsing
 data class DetailsRoot(@JsonProperty("embed_frame_url") val embedFrameUrl: String)
 data class PlaybackRoot(@JsonProperty("playback") val playback: Playback)
-data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>)
+data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>, @JsonProperty("version") val version: Any? = null)
 data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
 data class PlaybackDecryptSource(
     @JsonProperty("url") val url: String,
