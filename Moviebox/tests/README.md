@@ -1,72 +1,81 @@
-# Moviebox playback regression
+# Moviebox H5 playback regression
 
 Run `python Moviebox/tests/run_regression.py` from the repository root with Java 17 and Python 3.
-The runner downloads test tools into a temporary cache, compiles the production module against the
-real CloudStream API **without shims**, and separately runs the JVM fixtures. `CLOUDSTREAM_JAR`
-can select the same SDK jar used by the Gradle build. Test Android/app/link-builder shims exist
-only in the fixture compilation; none are packaged in the plugin. The real ExtractorLink,
-NiceHttp, OkHttp, JSON and coroutine classes are used by the integration harness.
+The runner compiles production against the real CloudStream SDK **without shims**, then separately
+runs the JVM fixtures. Optional `CLOUDSTREAM_JAR` selects the Gradle SDK jar; `MOVIEBOX_TEST_CACHE`
+selects a test-only dependency cache. Android/app/link-builder shims are never packaged.
+Fixtures are sanitized and do not establish live service or Android playback success.
 
-The fixtures are synthetic and sanitized. Passing them does not prove MovieBox live service
-availability or Android playback. There are no customer tokens, cookies or account credentials.
+## Current behavior — plugin version 14
 
-## Reference analysis
+- Media uses **H5 only**: `subject/play` with the exact subjectId, season, episode, detailPath,
+  streamSignType and codec flags. No requests to mobile `play-info`, `play-info/v2`, or media
+  extraction from native resourceDetectors remain in the resolver.
+- Mobile authentication, detail metadata and caption endpoints remain necessary to resolve
+  H5 detailPath/server-declared dubbing and preserve subtitles. They are not media sources.
+- Metadata tries the modern profile, the established catalog profile if needed, then public
+  H5 detail for the **same subject ID**. No title search/fuzzy match or episode substitution.
+  An explicit detailPath takes precedence over a stale detailUrl. Flat mobile and nested H5
+  subject metadata are checked for the exact identity.
+- All reference H5 routing aliases remain eligible if earlier aliases fail or return no usable
+  streams, even after another audio subject succeeds. The prior two-alias cap is removed;
+  a successful alias is preferred for later audio subjects. The first usable alias supplies
+  all its DASH/HLS/direct choices; aliases are not invented as separate video servers.
+- Labels use `Asli • Video • H.264`, `Indonesia • DASH • H.265`, etc. Language and codec names
+  are normalized, repeated "dub Audio" removed, and quality is left to CloudStream's display.
+  Choices are ordered by audio group, descending quality and compatible codec preference.
+  Distinct CDN alternatives with otherwise identical labels receive a server suffix.
+- Each signed request is validated independently. After validation only, signature rotations
+  for the same resource/audio are deduplicated. The actual signed URL is never rewritten;
+  content/codec/quality selectors and unknown token parameters remain significant.
+- Existing GET/Range bounds, manifest/segment checks, signed Cookie/token scoping, DRM rejection
+  and both caption endpoints are preserved. Caption failure never invalidates usable video.
 
-- Repository baseline: `e28f2caa3bbf73b54a7ec8906dce5ed1b0449f5f`.
-- Attached `MovieBoxProvider.cs3`: manifest **36**, plugin `com.MovieBox.MovieBoxProviderPlugin`.
-- Attachment SHA-256: `742a29f499669c954b8993f283ce3b45b562f29bf9156486e2bb6e36e871ac9b`.
-- Inspected `classes.dex` with JADX 1.5.3 and Androguard instruction disassembly.
-  JADX reported two failed/partial methods; original DEX instructions were checked for
-  `loadLinks`, `loadNativeMobileStreams`, `loadCaptions`, `extractPolicyResource`,
-  `buildCanonicalString`, `generateXTrSignature`, and `loadLinks$7.invokeSuspend`.
-  The native callback and web `emitWebStream` continuation/callback were also inspected.
-- Existing comments referring to v47 were not evidence that the attachment was v47.
+## Reacher investigation — 2026-10-16
 
-| Route | Request and response evidence in v36 |
-| --- | --- |
-| Existing v2 | Kept from repository: `play-info/v2`, exact subject/se/ep, original blank-header GET canonical and basic/codec request variants. |
-| Native | `subject-api/play-info?subjectId=…&se=…&ep=…`; `data.streams[]`, id, url, format, resolutions, codecName, signCookie. Native default JSON canonical uses the **default** protocol HMAC key, not the alternate key used by the old dormant helper. |
-| Detail resources | `subject-api/get?subjectId=…` → `data.resourceDetectors[].resolutionList[]` → resourceLink/resolution/se/ep. Serial detail resources must identify the exact episode. |
-| H5 | `subject/play` with subjectId/se/ep/detailPath/streamSignType/supportCodecs; `data.dash[]`, `data.hls[]`, `data.streams[]`. detailUrl/detailPath determine web path/referer. WEB_DOMAINS are routing aliases. Server-declared dubs supply subjectId/lanName/detailUrl. |
-| Signed media | Policy resource from Edge-Cache urlprefix or CloudFront Statement Resource. Native passes Cookie; H5 passes Cookie and signHeaderKey (default X-MB-Token), web Origin/Referer/UA. Restriction override headers present in the reference are deliberately omitted. Bearers are not sent to web aliases or media. |
-| Captions | get-stream-captions(subjectId, streamId), independently get-ext-captions(subjectId, resourceId, episode=0), both return `data.extCaptions[]`. The latter's episode=0 is the v36 resource-scoped API parameter, not an instruction to change the video episode. Existing v2 caption authentication is retained. |
+Input: subjectId `3620534210064175096`, **season 1, episode 1**, matching the supplied device video.
+The `/detail?id=…` URL is a provider identifier, not a browser playback page; the video records
+HTTP 404 when it is opened in the browser. The video also shows an App Upgrade Notice from the
+old sources, H5 playback of other titles, repeated quality text, and verbose audio labels.
 
-`playPath`, `playSource` and sports domains belong to the sports branch. They are not movie
-fallbacks. No sports module, catalog, episode listing, posters, search, trailer, registration
-or unrelated provider was ported or modified.
+Live H5 requests were made once to each reference alias with the same ID/episode and an empty
+path when metadata was unavailable. All seven returned HTTP 200/code 0 with:
 
-## Changes and limits
+```json
+{"streams":[],"dash":[],"hls":[],"hasResource":false,"vipLocked":false}
+```
 
-Removed premature failure on normal bearer bootstrap, wrong-episode retries, callback success
-based only on a URL string, and DASH-first preference. Native and H5 use separate request
-profiles and add validated choices. Queries on signed media remain intact. Policy-derived
-resources and original media are checked independently; policy cookies do not cross to an
-unrelated original host. Captions are requested for validated stream/resource IDs and deduplicated.
+Aliases checked: h5-api.aoneroom.com, 123moviesfree.club, movie-box.co, movieboxonline.net,
+sflix.film, netnaija.film and movieboxhd.net. Public H5 detail by this exact subject ID returned
+HTTP 404 / `TARGET_NOT_FOUND` / `subject not found`. The mobile detail request from the execution
+region returned HTTP 403 / `Service not available in current region`.
 
-Probes use GET/Range, cap reads at 4 KiB for media and 256 KiB for manifests, and follow at most
-three redirects. Candidate validation runs with concurrency three. HLS probes a variant,
-initialization/key where relevant, and a media segment; DASH probes a compatible video and
-audio representation's initialization/media URLs. Protected DASH and HLS DRM methods are rejected.
-Header scope is enforced on probe redirects and actual player segment/redirect requests.
-When video already exists, redundant H5 routing probes are capped at two aliases; when
-video routes failed, the complete reference alias list remains available.
-
-This is a bounded startup check, not a guarantee that every future segment, rendition, codec,
-seek, device decoder or expiring URL will work. Unsupported manifest arrangements are rejected
-rather than emitted as false positives. Signed query variants are retained because dropping
-unknown parameters can invalidate authorization. Only an HTTP fragment is deduplicated away.
+These observations do **not** prove permanent unavailability or availability in every region,
+season, or audio variant. They establish that those exact requests supplied no H5 media to
+emit. The provider must return no source rather than an upgrade notice or an unrelated title.
+The resolver now checks all eligible aliases and metadata profiles; real device retesting is
+still needed to establish whether supported-region metadata yields additional resources.
+No restriction override headers, public proxies, paywall or DRM bypass were added.
 
 ## Validation
 
-- 19 schema/media regressions: PASS.
-- 12 provider/crypto/local HTTP integration scenarios: PASS.
-- Production Kotlin compilation against real CloudStream SDK: PASS.
-- Android Gradle `:Moviebox:assembleDebug :Moviebox:make`: PASS (Java 17, SDK 36); plugin manifest version 13.
-- Live HTTP from execution environment: BLOCKED — api3 returned HTTP 403,
-  `Service not available in current region`; no region circumvention was used.
-- Real movie/series Android playback: NOT_TESTED; requires a device in a supported region.
+- 22 schema/media regressions: PASS.
+- 17 provider/crypto/local HTTP integration scenarios: PASS.
+- Production compilation against real CloudStream/NiceHttp/OkHttp APIs: PASS.
+- Android plugin packaging: the GitHub Build result is separate from local fixture validation.
+- Device playback of this version: NOT_TESTED.
 
-The integration scenarios cover movie 0/0, serial 1/1 and 2/4, unavailable bearer,
-endpoint errors, HTML masquerading as video, independent subtitle failure, H5 routing,
-actual signed manifest/segment requests, credential stripping after redirects, bounded
-reads when Range is ignored, and false/zero callbacks when all routes fail.
+Tests cover absence of v2/native requests, movie 0/0 and serial 1/1 or 2/4, failed bearer,
+independent captions, later H5 aliases after an existing success, metadata profile/H5 fallback,
+notice rejection, signed manifest/segment headers, cross-host credential stripping, bounded
+Range reads, expired signature rotation, clean labels and the observed empty Reacher response.
+
+## Reference
+
+The original H5/auth/policy/caption port was checked against `classes.dex` from the attached
+`MovieBoxProvider.cs3`, manifest **36**, using JADX and DEX instruction disassembly.
+Attachment SHA-256: `742a29f499669c954b8993f283ce3b45b562f29bf9156486e2bb6e36e871ac9b`.
+That reference also contained sports playPath/playSource branches; none were ported.
+The current cleanup baseline is `3c2677ac7dfd472a68552606314017758fd67591`.
+Catalog, search, posters, details, episode listing, recommendations, trailer and other providers
+are unchanged by this cleanup.

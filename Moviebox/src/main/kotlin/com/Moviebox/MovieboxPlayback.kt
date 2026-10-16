@@ -11,6 +11,8 @@ import org.jsoup.nodes.Element
 import org.jsoup.parser.Parser
 import java.io.IOException
 import java.net.URI
+import java.net.URLDecoder
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
@@ -46,16 +48,15 @@ internal object MovieboxPlayback {
 
     fun parse(raw: String, source: String, subject: String, se: Int, ep: Int,
               audio: String = ""): List<Stream> {
+        if (source != "H5") return emptyList()
         val root = JSONObject(raw)
         if (root.has("code") && root.optInt("code", -1) != 0) return emptyList()
         val data = root.optJSONObject("data") ?: return emptyList()
         if (!matches(data, subject, se, ep)) return emptyList()
         val result = mutableListOf<Stream>()
-        fun add(o: JSONObject, format: String, parent: JSONObject = data, resource: Boolean = false) {
+        fun add(o: JSONObject, format: String, parent: JSONObject = data) {
             if (!matches(o, subject, se, ep)) return
-            // Unfiltered detail resources must explicitly identify serial episodes.
-            if (resource && (se != 0 || ep != 0) && (!o.has("se") || !o.has("ep"))) return
-            val url = text(o, if (resource) "resourceLink" else "url")
+            val url = text(o, "url")
             if (!http(url)) return
             val quality = Regex("\\d{3,4}").findAll(text(o, "resolutions")
                 .ifBlank { text(o, "resolution") }).mapNotNull { it.value.toIntOrNull() }
@@ -69,18 +70,76 @@ internal object MovieboxPlayback {
                     .ifBlank { "X-MB-Token" },
                 text(o, "lanName").ifBlank { audio }, source)
         }
-        // Native/v2: streams. H5: dash, hls, streams (MP4/direct).
+        // Only H5 movie/series media groups are accepted.
         for ((key, format) in listOf("dash" to "DASH", "hls" to "HLS", "streams" to "")) {
             objects(data.optJSONArray(key)).forEach { add(it, format) }
-        }
-        objects(data.optJSONArray("resourceDetectors")).forEach { detector ->
-            objects(detector.optJSONArray("resolutionList")).forEach { add(it, "", detector, true) }
         }
         return result
     }
 
-    /** Do not normalize/reorder signed queries. Only fragments are irrelevant to HTTP media. */
-    fun key(s: Stream): String = s.url.substringBefore('#') + "|" + s.audio
+    fun metadata(raw: String?, subject: String): JSONObject? = try {
+        val root = raw?.let { JSONObject(it) }
+        val data = root?.takeIf { !it.has("code") || it.optInt("code",-1) == 0 }?.optJSONObject("data")
+        val item = data?.optJSONObject("subject") ?: data
+        item?.takeIf { text(it,"subjectId").let { id -> id.isEmpty() || id == subject } &&
+            (it.has("subjectId") || it.has("detailPath") || it.has("detailUrl") || it.has("dubs")) }
+    } catch (_: Exception) { null }
+
+    fun detailPath(detail: JSONObject): String {
+        // Prefer the explicit API path over a legacy/redirect detail URL.
+        val value = text(detail,"detailPath").ifBlank { text(detail,"detailUrl") }
+        return try { URI(value).path.orEmpty().trimEnd('/').substringAfterLast('/') }
+        catch (_: Exception) { value.substringBefore('?').trimEnd('/').substringAfterLast('/') }
+    }
+    fun audioName(raw: String): String {
+        val clean = raw.replace(Regex("(?i)\\b(dub(?:bed)?|audio)\\b"), "")
+            .replace(Regex("[()]"), " ").trim().replace(Regex("\\s+"), " ")
+        return when (clean.lowercase(Locale.ROOT)) {
+            "", "original", "default", "asli" -> "Asli"
+            "id", "indonesian", "indonesia", "bahasa indonesia" -> "Indonesia"
+            "en", "eng", "english", "inggris" -> "Inggris"
+            "hi", "hin", "hindi" -> "Hindi"
+            "es", "spa", "spanish", "español" -> "Spanyol"
+            "esla", "es-la", "spanish latino" -> "Spanyol (Latino)"
+            "ptbr", "pt-br", "portuguese brazil" -> "Portugis (Brasil)"
+            "pt", "por", "portuguese", "português" -> "Portugis"
+            "ko", "kor", "korean" -> "Korea"
+            "ja", "jpn", "japanese" -> "Jepang"
+            "zh", "zho", "chinese", "mandarin" -> "Mandarin"
+            "ta", "tam", "tamil" -> "Tamil"
+            "te", "tel", "telugu" -> "Telugu"
+            "ms", "malay" -> "Melayu"
+            "ar", "arabic" -> "Arab"
+            else -> clean
+        }
+    }
+    fun audioOrder(audio: String): Int = when (audioName(audio)) {
+        "Asli" -> 0; "Indonesia" -> 1; "Inggris" -> 2; else -> 3
+    }
+    fun codecName(raw: String): String = when (raw.lowercase(Locale.ROOT)) {
+        "h264", "h.264", "avc", "avc1" -> "H.264"
+        "hevc", "h265", "h.265", "hev1", "hvc1" -> "H.265"
+        else -> raw.trim().uppercase(Locale.ROOT)
+    }
+    fun codecOrder(raw: String): Int = when (codecName(raw)) { "H.264" -> 0; "H.265" -> 2; else -> 1 }
+    fun label(s: Stream, format: Format): String = listOf(audioName(s.audio),
+        if (format == Format.VIDEO) "Video" else format.name,
+        codecName(s.codec)).filter { it.isNotBlank() }.joinToString(" • ")
+
+    /** Validate each signed request separately. Never modify the actual playback URL. */
+    fun requestKey(s: Stream): String = s.url.substringBefore('#') + "|" + audioName(s.audio)
+    private val authQueryKeys = setOf("policy","signature","key-pair-id","expires",
+        "cloudfront-policy","cloudfront-signature","cloudfront-key-pair-id",
+        "x-amz-algorithm","x-amz-credential","x-amz-date","x-amz-expires",
+        "x-amz-signedheaders","x-amz-signature","x-amz-security-token")
+    /** Deduplicate validated media only; preserve content selectors and unknown token parameters. */
+    fun key(s: Stream): String = try {
+        val uri = URI(s.url)
+        val query = uri.rawQuery.orEmpty().split('&').filter { entry -> entry.isNotBlank() &&
+            URLDecoder.decode(entry.substringBefore('='),"UTF-8").lowercase(Locale.ROOT) !in authQueryKeys }
+            .joinToString("&")
+        "${uri.scheme}://${uri.rawAuthority}${uri.rawPath}" + (if (query.isEmpty()) "" else "?$query") + "|" + audioName(s.audio)
+    } catch (_: Exception) { requestKey(s) }
     fun format(s: Stream, sample: Sample): Format? {
         val body = sample.bytes.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\n', '\r', '\t')
         if (sample.code !in 200..299 || sample.bytes.isEmpty() || notice(sample.url)) return null

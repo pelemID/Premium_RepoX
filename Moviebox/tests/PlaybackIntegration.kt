@@ -18,6 +18,9 @@ fun main() = runBlocking {
     server.createContext("/") { exchange ->
         mediaRequests += exchange.requestURI.path to exchange.requestHeaders.toMap()
         val path = exchange.requestURI.path
+        if (exchange.requestURI.rawQuery.orEmpty().contains("Signature=expired")) {
+            exchange.sendResponseHeaders(403,-1);exchange.close();return@createContext
+        }
         if (path.startsWith("/signed/") &&
                 (exchange.requestHeaders.getFirst("Cookie") != "fixture-signed" ||
                  exchange.requestHeaders.getFirst("X-MB-Token") != "fixture-signed")) {
@@ -46,11 +49,13 @@ fun main() = runBlocking {
             }.build()
     fun json(path: String, id: String = "s1") = """{"code":0,"data":{"streams":[{"url":"$root/$path","id":"$id","format":"MP4"}]}}"""
     suspend fun test(name: String, block: suspend () -> Unit) {
-        PlaybackApiFixture.requests.clear();mediaRequests.clear();block();count++;println("PASS $name")
+        PlaybackApiFixture.requests.clear();mediaRequests.clear();block()
+        check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
+        count++;println("PASS $name")
     }
-    suspend fun load(se: Int = 0, ep: Int = 0): Triple<Boolean,List<ExtractorLink>,List<SubtitleFile>> {
+    suspend fun load(se: Int = 0, ep: Int = 0, subject: String = "123"): Triple<Boolean,List<ExtractorLink>,List<SubtitleFile>> {
         val provider = MovieBoxProvider();val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
-        val data="""{"subjectId":"123","se":$se,"ep":$ep,"subjectType":${if(se==0) 1 else 2}}"""
+        val data="""{"subjectId":"$subject","se":$se,"ep":$ep,"subjectType":${if(se==0) 1 else 2}}"""
         val ok=provider.loadLinks(data,false,subs::add,links::add)
         return Triple(ok,links,subs)
     }
@@ -69,35 +74,38 @@ fun main() = runBlocking {
             val edge=java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("https://cdn.example.test/movie/".toByteArray())
             check(method.invoke(MovieBoxProvider(),"Edge-Cache-Cookie=urlprefix=$edge:expires=9999999999")=="https://cdn.example.test/movie/index.mpd")
         }
-        test("bearer unavailable: native and H5 remain independent and both emit") {
+        test("only H5 is requested even when both mobile play-info fixtures would succeed") {
             PlaybackApiFixture.responder = { r -> when {
-                r.url.encodedPath.endsWith("ranking-list") -> response(r,500)
-                r.url.encodedPath.endsWith("play-info/v2") -> response(r,401)
-                r.url.encodedPath.endsWith("play-info") -> response(r,body=json("native.mp4"))
-                r.url.encodedPath.endsWith("subject/play") -> response(r,body=json("web.m3u8","web"))
+                r.url.encodedPath.endsWith("ranking-list") -> response(r,token="fixture")
+                r.url.encodedPath.contains("play-info") -> error("Removed mobile playback route called")
+                r.url.encodedPath.endsWith("subject/play") -> response(r,body=json("web.mp4"))
                 else -> response(r)
             } }
-            val (ok,links,_)=load();check(ok && links.size==2)
-            check(links.any { it.name.contains("Native") } && links.any { it.name.contains("H5") })
+            val (ok,links,_)=load();check(ok && links.size==1)
+            check(links.single().name=="Asli • Video")
         }
-        test("v2 retained when native fails; independent ext captions survive primary failure") {
+        test("no bearer or metadata available: guest H5 still works") {
+            PlaybackApiFixture.responder = { r -> if(r.url.encodedPath.endsWith("subject/play"))
+                response(r,body=json("guest.mp4")) else response(r,500) }
+            val (ok,links,_)=load();check(ok && links.size==1)
+        }
+        test("independent ext captions survive primary failure without a native media request") {
             PlaybackApiFixture.responder = { r -> when {
                 r.url.encodedPath.endsWith("ranking-list") -> response(r,token="fixture-anonymous")
-                r.url.encodedPath.endsWith("play-info/v2") -> response(r,body=json("v2.mp4"))
-                r.url.encodedPath.endsWith("play-info") -> response(r,503)
+                r.url.encodedPath.endsWith("subject/play") -> response(r,body=json("h5.mp4"))
                 r.url.encodedPath.endsWith("get-stream-captions") -> response(r,500)
                 r.url.encodedPath.endsWith("get-ext-captions") -> response(r,body="""{"data":{"extCaptions":[{"url":"https://subs.example.test/a.srt","lanName":"Indonesia"}]}}""")
                 else -> response(r)
             } }
-            val (ok,links,subs)=load();check(ok && links.size==1 && links[0].name.contains("V2"))
+            val (ok,links,subs)=load();check(ok && links.size==1)
             check(subs.single().lang=="Indonesia")
             check(PlaybackApiFixture.requests.any { it.url.encodedPath.endsWith("get-ext-captions") && it.url.queryParameter("resourceId")=="s1" })
         }
-        test("serial 2/4 and 1/1 use exact selection across all API routes") {
+        test("serial 2/4 and 1/1 keep exact episode across H5 aliases") {
             PlaybackApiFixture.responder = { r -> when {
                 r.url.encodedPath.endsWith("ranking-list") -> response(r,token="fixture")
-                r.url.encodedPath.endsWith("play-info/v2") -> response(r,body="""{"data":{"se":9,"ep":9,"streams":[{"url":"$root/wrong.mp4"}]}}""")
-                r.url.encodedPath.endsWith("play-info") -> response(r,body=json("right.mp4"))
+                r.url.encodedPath.endsWith("subject/play") && r.url.host=="h5-api.aoneroom.com" -> response(r,body="""{"data":{"se":9,"ep":9,"streams":[{"url":"$root/wrong.mp4"}]}}""")
+                r.url.encodedPath.endsWith("subject/play") -> response(r,body=json("right.mp4"))
                 else -> response(r)
             } }
             for ((se,ep) in listOf(2 to 4,1 to 1)) {
@@ -108,14 +116,13 @@ fun main() = runBlocking {
                 }
             }
         }
-        test("HTML notice from v2 and native cannot suppress a valid H5 fallback") {
+        test("invalid notice cannot suppress a valid later H5 alias") {
             PlaybackApiFixture.responder = { r -> when {
-                r.url.encodedPath.endsWith("ranking-list") -> response(r,token="fixture")
-                r.url.encodedPath.contains("play-info") -> response(r,body=json("notice.html"))
+                r.url.encodedPath.endsWith("subject/play") && r.url.host=="h5-api.aoneroom.com" -> response(r,body=json("notice.html"))
                 r.url.encodedPath.endsWith("subject/play") -> response(r,body=json("fallback.mp4"))
                 else -> response(r)
             } }
-            val (ok,links,_)=load();check(ok && links.size==1 && links[0].name.contains("H5"))
+            val (ok,links,_)=load();check(ok && links.size==1 && links.single().url.endsWith("fallback.mp4"))
             check(PlaybackApiFixture.requests.none { it.header("x-vip-restrict")!=null || it.header("x-no-high-risk-restrict")!=null })
             check(PlaybackApiFixture.requests.filter { it.url.host!="h5-api.aoneroom.com" && it.url.encodedPath.endsWith("subject/play") }.all { it.header("Authorization")==null })
         }
@@ -151,7 +158,7 @@ fun main() = runBlocking {
                 r.url.encodedPath.endsWith("subject/play") && r.url.host=="123moviesfree.club" -> response(r,body=json("alias.mp4"))
                 else -> response(r,503)
             } }
-            val (ok,links,_)=load(2,4);check(ok && links.single().name.contains("H5"))
+            val (ok,links,_)=load(2,4);check(ok && links.single().name.startsWith("Asli"))
             val alias=PlaybackApiFixture.requests.single { it.url.host=="123moviesfree.club" }
             check(alias.header("Authorization")==null && alias.url.queryParameter("se")=="2" && alias.url.queryParameter("ep")=="4")
         }
@@ -159,16 +166,54 @@ fun main() = runBlocking {
             PlaybackApiFixture.responder = { response(it,503) }
             val (ok,links,_)=load();check(!ok && links.isEmpty())
         }
-        test("expired v2 bearer refreshes once and then returns the selected movie") {
-            var bootstraps=0
+        test("expired signed URL does not hide its working rotation; duplicate labels stay clean") {
+            PlaybackApiFixture.responder = { r -> if(r.url.encodedPath.endsWith("subject/play"))
+                response(r,body="""{"data":{"streams":[{"url":"$root/rotate.mp4?Signature=expired","id":"x","codecName":"h264","resolutions":"1080"},{"url":"$root/rotate.mp4?Signature=valid","id":"y","codecName":"h264","resolutions":"1080"},{"url":"$root/rotate.mp4?Signature=other","id":"z","codecName":"h264","resolutions":"1080"}]}}""") else response(r) }
+            val (ok,links,_)=load();check(ok && links.size==1)
+            check(links.single().name=="Asli • Video • H.264" && links.single().quality==1080)
+            check(!links.single().url.contains("expired"))
+        }
+        test("dub on third alias remains discoverable after original H5 already succeeded") {
             PlaybackApiFixture.responder = { r -> when {
-                r.url.encodedPath.endsWith("ranking-list") -> response(r,token=if(++bootstraps==1) "expired-fixture" else "refreshed-fixture")
-                r.url.encodedPath.endsWith("play-info/v2") && r.header("Authorization")=="Bearer expired-fixture" -> response(r,401)
-                r.url.encodedPath.endsWith("play-info/v2") -> response(r,body=json("refreshed.mp4"))
-                else -> response(r,503)
+                r.url.encodedPath.endsWith("subject-api/get") && r.url.queryParameter("subjectId")=="123" -> response(r,body="""{"data":{"subjectId":"123","detailPath":"correct-path","detailUrl":"https://movie-box.co/movies/old-path","dubs":[{"subjectId":"456","lanName":"Indonesian dub","detailPath":"dub-path"}]}}""")
+                r.url.encodedPath.endsWith("subject/play") && r.url.queryParameter("subjectId")=="123" -> response(r,body=json("original.mp4"))
+                r.url.encodedPath.endsWith("subject/play") && r.url.host=="movie-box.co" -> response(r,body=json("indonesia.mp4"))
+                else -> response(r,404)
             } }
-            val (ok,links,_)=load();check(ok && links.single().name.contains("V2"))
-            check(PlaybackApiFixture.requests.count { it.url.encodedPath.endsWith("play-info/v2") }==2)
+            val (ok,links,_)=load(2,4);check(ok && links.size==2)
+            check(links[0].name.startsWith("Asli") && links[1].name.startsWith("Indonesia"))
+            check(PlaybackApiFixture.requests.any { it.url.host=="movie-box.co" && it.url.queryParameter("subjectId")=="456" })
+            check(PlaybackApiFixture.requests.filter { it.url.queryParameter("subjectId")=="123" && it.url.encodedPath.endsWith("subject/play") }
+                .all { it.url.queryParameter("detailPath")=="correct-path" })
+        }
+        test("catalog metadata profile recovers H5 detailPath after modern metadata fails") {
+            PlaybackApiFixture.responder = { r -> when {
+                r.url.encodedPath.endsWith("ranking-list") -> response(r,token="fixture")
+                r.url.encodedPath.endsWith("subject-api/get") && r.header("User-Agent").orEmpty().contains("oneroom/") -> response(r,body="""{"data":{"subjectId":"123","detailPath":"catalog-path"}}""")
+                r.url.encodedPath.endsWith("subject/play") && r.url.queryParameter("detailPath")=="catalog-path" -> response(r,body=json("catalog-path.mp4"))
+                else -> response(r,403)
+            } }
+            val (ok,links,_)=load();check(ok && links.single().url.endsWith("catalog-path.mp4"))
+            check(PlaybackApiFixture.requests.count { it.url.encodedPath.endsWith("subject-api/get") }==2)
+        }
+        test("nested exact-subject H5 detail recovers path when mobile metadata is unavailable") {
+            PlaybackApiFixture.responder = { r -> when {
+                r.url.encodedPath.endsWith("/detail") -> response(r,body="""{"data":{"subject":{"subjectId":"123","detailPath":"web-path"}}}""")
+                r.url.encodedPath.endsWith("subject/play") && r.url.queryParameter("detailPath")=="web-path" -> response(r,body=json("web-path.mp4"))
+                else -> response(r,403)
+            } }
+            val (ok,links,_)=load();check(ok && links.single().url.endsWith("web-path.mp4"))
+        }
+        test("Reacher observed empty H5 schema tries every alias without playing an upgrade notice") {
+            val empty="""{"code":0,"message":"ok","data":{"streams":[],"dash":[],"hls":[],"hasResource":false,"vipLocked":false}}"""
+            PlaybackApiFixture.responder = { r -> when {
+                r.url.encodedPath.endsWith("subject/play") -> response(r,body=empty)
+                r.url.encodedPath.contains("play-info") -> response(r,body=json("upgrade-notice.mp4"))
+                else -> response(r,404)
+            } }
+            val (ok,links,_)=load(1,1,"3620534210064175096");check(!ok && links.isEmpty())
+            check(PlaybackApiFixture.requests.count { it.url.encodedPath.endsWith("subject/play") }==MovieboxPlayback.webDomains.size)
+            check(mediaRequests.isEmpty())
         }
         println("INTEGRATION $count PASS; synthetic API/local HTTP, MovieBox device playback NOT_TESTED")
     } finally {

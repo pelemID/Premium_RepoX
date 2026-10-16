@@ -19,8 +19,8 @@ fun main() = runBlocking {
             if(target == u) sample(u,body) else responses[target]
         }
     }
-    test("v2 native movie 0/0 and signed query preserved") {
-        val r = MovieboxPlayback.parse("""{"code":0,"data":{"streams":[{"id":"s1","url":"$url","resolutions":"360,720,1080","codecName":"h264"}]}}""","V2","123",0,0)
+    test("H5 movie 0/0 and signed query preserved") {
+        val r = MovieboxPlayback.parse("""{"code":0,"data":{"streams":[{"id":"s1","url":"$url","resolutions":"360,720,1080","codecName":"h264"}]}}""","H5","123",0,0)
         check(r.single().url == url && r.single().quality == 1080)
     }
     test("H5 DASH HLS and direct groups with audio and signHeaderKey") {
@@ -30,17 +30,18 @@ fun main() = runBlocking {
         check(r[0].audio == "Indonesia" && r[0].signHeader == "X-Stream-Token")
     }
     test("empty data and API error rejected") {
-        check(MovieboxPlayback.parse("""{"code":0,"data":{}}""","V2","123",0,0).isEmpty())
-        check(MovieboxPlayback.parse("""{"code":401,"data":{"streams":[{"url":"$url"}]}}""","V2","123",0,0).isEmpty())
+        check(MovieboxPlayback.parse("""{"code":0,"data":{}}""","H5","123",0,0).isEmpty())
+        check(MovieboxPlayback.parse("""{"code":401,"data":{"streams":[{"url":"$url"}]}}""","H5","123",0,0).isEmpty())
     }
-    test("series season 2 episode 4 cannot accept other episode or unindexed detail resource") {
-        val raw = """{"data":{"resourceDetectors":[{"resourceId":"r1","resolutionList":[{"resourceLink":"https://cdn.example.test/wrong.mp4","se":1,"ep":1},{"resourceLink":"https://cdn.example.test/right.mp4","se":2,"ep":4,"resolution":720},{"resourceLink":"https://cdn.example.test/unindexed.mp4"}]}]}}"""
-        val r = MovieboxPlayback.parse(raw,"Native","123",2,4)
-        check(r.size == 1 && r[0].url.endsWith("right.mp4") && r[0].id == "r1")
+    test("removed native resources and v2 streams are never accepted") {
+        val raw = """{"data":{"resourceDetectors":[{"resolutionList":[{"resourceLink":"https://cdn.example.test/native.mp4","se":2,"ep":4}]}]}}"""
+        check(MovieboxPlayback.parse(raw,"H5","123",2,4).isEmpty())
+        val streams = """{"data":{"streams":[{"url":"https://cdn.example.test/old.mp4"}]}}"""
+        for (source in listOf("V2","Native")) check(MovieboxPlayback.parse(streams,source,"123",0,0).isEmpty())
     }
     test("wrong subject and wrong top-level episode rejected") {
         for (extra in listOf("\"subjectId\":\"124\",", "\"se\":1,\"ep\":2,")) {
-            check(MovieboxPlayback.parse("""{"data":{$extra"streams":[{"url":"$url"}]}}""","V2","123",2,4).isEmpty())
+            check(MovieboxPlayback.parse("""{"data":{$extra"streams":[{"url":"$url"}]}}""","H5","123",2,4).isEmpty())
         }
     }
     test("HTML notice response cannot pass by URL or HTTP 200") {
@@ -71,6 +72,29 @@ fun main() = runBlocking {
         check(MovieboxPlayback.key(stream()) == MovieboxPlayback.key(stream(url+"#fragment")))
         check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream(url+"&token=other")))
         check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream().copy(audio="Indonesia")))
+    }
+    test("validated signature rotations deduplicate without mutating signed request URLs") {
+        val a=stream("https://cdn.example.test/a.mp4?Signature=one&Policy=p&quality=1080")
+        val b=stream("https://cdn.example.test/a.mp4?Signature=two&Policy=q&quality=1080")
+        check(MovieboxPlayback.key(a)==MovieboxPlayback.key(b))
+        check(MovieboxPlayback.requestKey(a)!=MovieboxPlayback.requestKey(b))
+        check(a.url.endsWith("Signature=one&Policy=p&quality=1080"))
+        check(MovieboxPlayback.key(a)!=MovieboxPlayback.key(b.copy(url=b.url.replace("quality=1080","quality=720"))))
+    }
+    test("labels normalize language codec and avoid duplicated quality") {
+        val label=MovieboxPlayback.label(stream().copy(audio="Indonesian dub Audio",codec="hevc"),MovieboxPlayback.Format.DASH)
+        check(label=="Indonesia • DASH • H.265")
+        check(!label.contains("1080") && !label.contains("dub",true))
+        check(MovieboxPlayback.audioName("English dub")=="Inggris")
+        check(MovieboxPlayback.audioName("")=="Asli")
+        check(MovieboxPlayback.audioOrder("Indonesian dub")<MovieboxPlayback.audioOrder("English dub"))
+    }
+    test("exact-identity flat and nested H5 detail metadata; explicit detailPath wins") {
+        val raw="""{"code":0,"data":{"subject":{"subjectId":"123","detailPath":"correct-slug","detailUrl":"https://movie-box.co/movies/old-slug?id=123"}}}"""
+        val detail=MovieboxPlayback.metadata(raw,"123")!!
+        check(MovieboxPlayback.detailPath(detail)=="correct-slug")
+        check(MovieboxPlayback.metadata(raw,"456")==null)
+        check(MovieboxPlayback.metadata("""{"code":404,"data":{"subjectId":"123"}}""","123")==null)
     }
     val mpd = """<?xml version="1.0"?><MPD><Period><AdaptationSet mimeType="video/mp4"><Representation id="v1" bandwidth="1000" codecs="avc1.42"><SegmentTemplate initialization="init-${'$'}RepresentationID${'$'}.mp4" media="v-${'$'}Number%05d${'$'}.m4s" startNumber="7"/></Representation></AdaptationSet><AdaptationSet mimeType="audio/mp4"><Representation id="a1"><SegmentTemplate initialization="audio-init.mp4" media="audio-${'$'}Time${'$'}.m4s"><SegmentTimeline><S t="42" d="10"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"""
     val mediaUrls = listOf("init-v1.mp4","v-00007.m4s","audio-init.mp4","audio-42.m4s").associate { val u="https://cdn.example.test/title/$it"; u to media(u) }

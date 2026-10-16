@@ -664,12 +664,12 @@ class MovieBoxProvider : MainAPI() {
 
             val rawXUser = response.headers["x-user"]
             if (rawXUser.isNullOrBlank()) {
-                Log.e(TAG, "[PLAYBACK-NATIVE] x-user token header kosong HTTP=${response.code}")
+                Log.e(TAG, "[PLAYBACK-AUTH] x-user token header kosong HTTP=${response.code}")
                 null
             } else {
                 val token = JSONObject(rawXUser).optString("token", "")
                 if (token.isBlank()) {
-                    Log.e(TAG, "[PLAYBACK-NATIVE] token anonymous kosong HTTP=${response.code}")
+                    Log.e(TAG, "[PLAYBACK-AUTH] token anonymous kosong HTTP=${response.code}")
                     null
                 } else {
                     token
@@ -679,7 +679,7 @@ class MovieBoxProvider : MainAPI() {
         } catch (e: Exception) {
             Log.e(
                 TAG,
-                "[PLAYBACK-NATIVE] gagal mengambil token anonymous: " +
+                "[PLAYBACK-AUTH] gagal mengambil token anonymous: " +
                     "${e.javaClass.simpleName}"
             )
             null
@@ -1233,20 +1233,6 @@ class MovieBoxProvider : MainAPI() {
         return Interceptor { chain -> mediaClient.newCall(chain.request()).execute() }
     }
 
-    private fun playbackV2Headers(url: String, bearer: String?): Map<String, String> {
-        val ts = System.currentTimeMillis().toString()
-        val client = JSONObject(clientInfo()).put("version_name", "4.0.03.0922.03")
-            .put("version_code", 50020131L).put("os_version", Build.VERSION.RELEASE ?: "")
-            .put("brand", Build.BRAND ?: "").put("model", Build.MODEL ?: "")
-            .put("system_language",java.util.Locale.getDefault().language)
-            .put("region",java.util.Locale.getDefault().country)
-            .put("timezone",java.util.TimeZone.getDefault().id).toString()
-        return mutableMapOf("x-tr-signature" to playbackGetSignature(URI(url).let { u -> u.rawPath + u.rawQuery.orEmpty().split("&").filter { it.isNotBlank() }.sortedBy { it.substringBefore("=") }.joinToString("&").let { if (it.isEmpty()) "" else "?$it" } }, ts),
-            "x-client-info" to client, "x-client-status" to "1").apply {
-            if (!bearer.isNullOrBlank()) put("Authorization", "Bearer $bearer")
-        }
-    }
-
     /** Do not log response bodies, full signed URLs, cookies or bearer values. */
     private suspend fun playbackRequest(url: String, headers: Map<String, String>): Pair<Int, String>? = try {
         val response = app.get(url, headers = headers, timeout = 8, allowRedirects = false)
@@ -1257,6 +1243,13 @@ class MovieBoxProvider : MainAPI() {
         Log.d(TAG, "[PLAYBACK] ${URI(url).host}${URI(url).path} ${e.javaClass.simpleName}")
         null
     }
+
+    private data class PlaybackChoice(
+        val stream: MovieboxPlayback.Stream,
+        val headers: Map<String,String>,
+        val referer: String,
+        val format: MovieboxPlayback.Format
+    )
 
     override suspend fun loadLinks(
         data: String,
@@ -1270,17 +1263,58 @@ class MovieBoxProvider : MainAPI() {
         val se = if (selected.subjectType == 1) 0 else selected.se
         val ep = if (selected.subjectType == 1) 0 else selected.ep
         val api = mainUrl.trimEnd('/')
-        var normalBearer = try { withTimeoutOrNull(8000) { getBearerToken() } } catch (e: CancellationException) { throw e
-            } catch (_: Exception) { null }
-        val emitted = linkedSetOf<String>()
-        val captionIds = linkedMapOf<Pair<String, String>, Pair<String, String>>()
+        // Mobile API remains metadata/caption authentication only; media is exclusively H5.
+        var modernBearer = fetchModernPlaybackBearer()
+        var normalBearer: String? = null
+        var legacyBootstrapAttempted = false
+        val choices = linkedMapOf<String, PlaybackChoice>()
+        val captionIds = linkedMapOf<Pair<String, String>, String>()
         val subtitleUrls = linkedSetOf<String>()
         val validatedUrls = mutableMapOf<String, MovieboxPlayback.Format>()
         val failedUrls = mutableSetOf<String>()
 
-        suspend fun emit(raw: String, source: String, subject: String, origin: String,
+        suspend fun legacyBearer(): String? {
+            if (!legacyBootstrapAttempted) {
+                legacyBootstrapAttempted = true
+                normalBearer = try { withTimeoutOrNull(8000) { getBearerToken() } }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+            }
+            return normalBearer
+        }
+        fun webHeaders(host: String, referer: String): Map<String, String> =
+            mutableMapOf("User-Agent" to MovieboxPlayback.WEB_UA,"Referer" to referer,
+                "Accept" to "application/json","x-client-info" to "{\"timezone\":\"Asia/Calcutta\"}",
+                "x-request-lang" to "en","x-source" to "").apply {
+                // API bearer is never forwarded to third-party web aliases or media.
+                if (host == "https://h5-api.aoneroom.com" && modernBearer != null)
+                    put("Authorization", "Bearer $modernBearer")
+            }
+        suspend fun metadata(subject: String): JSONObject? {
+            val url = "$api/wefeed-mobile-bff/subject-api/get?subjectId=$subject"
+            var response = playbackRequest(url,modernPlaybackHeaders(url,modernBearer))
+            if (response?.first in listOf(401,441)) {
+                modernBearer = fetchModernPlaybackBearer()
+                response = playbackRequest(url,modernPlaybackHeaders(url,modernBearer))
+            }
+            MovieboxPlayback.metadata(response?.takeIf { it.first == 200 }?.second,subject)?.let { return it }
+            // Preserve the established catalog session as a metadata fallback. Do not request play-info.
+            val bearer = legacyBearer()
+            if (bearer != null) {
+                val ts = System.currentTimeMillis().toString()
+                val path = URI(url).let { it.rawPath + "?" + it.rawQuery }
+                response = playbackRequest(url,headersFor(ts,generateSignature("GET",path,ts),bearer))
+                MovieboxPlayback.metadata(response?.takeIf { it.first == 200 }?.second,subject)?.let { return it }
+            }
+            // Public H5 detail uses the same exact subject identity; never search/fuzzy-match another title.
+            val host = MovieboxPlayback.webDomains.first()
+            val webUrl = "$host/wefeed-h5api-bff/detail?subjectId=$subject"
+            val web = playbackRequest(webUrl,webHeaders(host,"$host/"))
+            return MovieboxPlayback.metadata(web?.takeIf { it.first == 200 }?.second,subject)
+        }
+
+        suspend fun collectStreams(raw: String, subject: String, origin: String,
                          referer: String, audio: String = ""): Int {
-            val parsed = try { MovieboxPlayback.parse(raw,source,subject,se,ep,audio) }
+            val parsed = try { MovieboxPlayback.parse(raw,"H5",subject,se,ep,audio) }
                 catch (_: Exception) { emptyList() }
             // Policy resources are media candidates, not authorization to strip signed query parameters.
             val candidates = parsed.flatMap { stream ->
@@ -1289,7 +1323,7 @@ class MovieBoxProvider : MainAPI() {
                     listOf(stream.copy(url = policy, format = "DASH"),
                         stream.copy(cookie = if (MovieboxPlayback.scopeHeaders(mapOf("Cookie" to "scope-check"),policy,stream.url)["Cookie"] != null) stream.cookie else null))
                 } else listOf(stream)
-            }.filterNot { MovieboxPlayback.notice(it.url) }.distinctBy { MovieboxPlayback.key(it) }
+            }.filterNot { MovieboxPlayback.notice(it.url) }.distinctBy { MovieboxPlayback.requestKey(it) }
                 .sortedWith(compareBy<MovieboxPlayback.Stream> { it.codec.contains("hevc",true) }
                     .thenBy { it.format.equals("DASH",true) }.thenByDescending { it.quality ?: 0 })
             val semaphore = Semaphore(3)
@@ -1297,7 +1331,7 @@ class MovieBoxProvider : MainAPI() {
                 candidates.map { stream -> async {
                     semaphore.withPermit {
                         val headers = MovieboxPlayback.mediaHeaders(stream,origin,referer,
-                            if (source == "H5") MovieboxPlayback.WEB_UA else if (source == "V2") CS_USER_AGENT else PLAYBACK_USER_AGENT)
+                            MovieboxPlayback.WEB_UA)
                         val cacheKey = stream.url + "|" + headers.toSortedMap().toString()
                         val valid = validatedUrls[cacheKey]?.let { MovieboxPlayback.Validated(stream,it) }
                             ?: if (cacheKey in failedUrls) null else try {
@@ -1315,131 +1349,100 @@ class MovieBoxProvider : MainAPI() {
                 validatedUrls[cacheKey] = valid.format
                 val captionKey = subject to stream.id
                 if (stream.id.isNotBlank() && captionKey !in captionIds)
-                    captionIds[captionKey] = source to stream.audio
-                if (!emitted.add(MovieboxPlayback.key(stream))) continue
-                val type = when(valid.format) {
-                    MovieboxPlayback.Format.DASH -> ExtractorLinkType.DASH
-                    MovieboxPlayback.Format.HLS -> ExtractorLinkType.M3U8
-                    MovieboxPlayback.Format.VIDEO -> ExtractorLinkType.VIDEO
-                }
-                val label = "$name $source ${valid.format}" +
-                    (stream.quality?.let { " ${it}p" } ?: "") +
-                    stream.codec.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty() +
-                    stream.audio.takeIf { it.isNotBlank() }?.let { " $it Audio" }.orEmpty()
-                callback(newExtractorLink(name,label,stream.url,type) {
-                    this.headers = headers
-                    this.referer = referer
-                    stream.quality?.let { this.quality = it }
-                })
+                    captionIds[captionKey] = stream.audio
+                val key = MovieboxPlayback.key(stream)
+                if (key in choices) continue
+                choices[key] = PlaybackChoice(stream,headers,referer,valid.format)
                 count++
             }
-            Log.d(TAG, "[PLAYBACK] source=$source candidates=${candidates.size} validated=$count se=$se ep=$ep")
+            Log.d(TAG, "[PLAYBACK-H5] candidates=${candidates.size} validated=$count se=$se ep=$ep")
             return count
         }
         fun query(subject: String) = "subjectId=$subject&se=$se&ep=$ep"
-        // Preserve the v2 request/signature; bearer failure leaves independent routes available.
-        val v2Path = "/wefeed-mobile-bff/subject-api/play-info/v2"
-        v2@ for (host in listOf(api,"https://api4sg.aoneroom.com").distinct()) {
-            if (normalBearer == null) break
-            for (extra in listOf("","&streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1")) {
-                val url = "$host$v2Path?${query(selected.subjectId)}$extra"
-                var response = playbackRequest(url,playbackV2Headers(url,normalBearer))
-                if (response?.first in listOf(401,441)) {
-                    normalBearer = try { withTimeoutOrNull(8000) { getBearerToken() } } catch (e: CancellationException) { throw e
-                        } catch (_: Exception) { null }
-                    if (normalBearer != null) response = playbackRequest(url,playbackV2Headers(url,normalBearer))
-                }
-                if (response?.first == 200 && emit(response.second,"V2",selected.subjectId,api,"$api/") > 0) break@v2
-                // Transport/auth errors are not repaired by adding codecs.
-                if (response?.first != 200) break
-            }
-        }
-        // v36's native profile obtains its own anonymous session; it is not dependent on v2 bootstrap.
-        var modernBearer = fetchModernPlaybackBearer()
-        val nativeUrl = "$api/wefeed-mobile-bff/subject-api/play-info?${query(selected.subjectId)}"
-        var native = playbackRequest(nativeUrl,modernPlaybackHeaders(nativeUrl,modernBearer))
-        if (native?.first in listOf(401,441)) {
-            modernBearer = fetchModernPlaybackBearer()
-            if (modernBearer != null) native = playbackRequest(nativeUrl,modernPlaybackHeaders(nativeUrl,modernBearer))
-        }
-        if (native?.first == 200) emit(native.second,"Native",selected.subjectId,api,"$api/")
-
-        // Metadata read ONLY for playback detailPath, resourceDetectors and server-declared dubbing.
-        val detailUrl = "$api/wefeed-mobile-bff/subject-api/get?subjectId=${selected.subjectId}"
-        val detailResponse = playbackRequest(detailUrl,modernPlaybackHeaders(detailUrl,modernBearer))
-        val detailRaw = detailResponse?.takeIf { it.first == 200 }?.second
-        val detail = try { detailRaw?.let { JSONObject(it) }?.takeIf {
-            !it.has("code") || it.optInt("code",-1) == 0
-        }?.optJSONObject("data")?.takeIf { MovieboxPlayback.text(it,"subjectId").let { id ->
-            id.isEmpty() || id == selected.subjectId } } } catch (_: Exception) { null }
-        if (detailRaw != null) emit(detailRaw,"Native",selected.subjectId,api,"$api/")
+        // Detail is read solely for H5 paths and explicitly declared audio subjects.
+        val detail = metadata(selected.subjectId)
         val subjects = mutableListOf(Triple(selected.subjectId,"",detail))
         MovieboxPlayback.objects(detail?.optJSONArray("dubs")).forEach { dub ->
             val sid = MovieboxPlayback.text(dub,"subjectId")
             if (sid.matches(Regex("[0-9]+")) && subjects.none { it.first == sid })
                 subjects += Triple(sid,MovieboxPlayback.text(dub,"lanName"),dub)
         }
-        for ((subject,audio,initialDetail) in subjects) {
-            var meta = initialDetail
-            if (subject != selected.subjectId) {
-                val url = "$api/wefeed-mobile-bff/subject-api/get?subjectId=$subject"
-                val response = playbackRequest(url,modernPlaybackHeaders(url,modernBearer))
-                meta = try { response?.takeIf { it.first == 200 }?.second?.let {
-                    JSONObject(it).takeIf { root -> !root.has("code") || root.optInt("code",-1)==0 }
-                        ?.optJSONObject("data")?.takeIf { item -> MovieboxPlayback.text(item,"subjectId").let {
-                            id -> id.isEmpty() || id == subject } } } } catch (_: Exception) { null }
-                val urlNative = "$api/wefeed-mobile-bff/subject-api/play-info?${query(subject)}"
-                playbackRequest(urlNative,modernPlaybackHeaders(urlNative,modernBearer))?.takeIf { it.first == 200 }
-                    ?.let { emit(it.second,"Native",subject,api,"$api/",audio) }
-            }
+        val orderedSubjects = subjects.sortedWith(compareBy<Triple<String,String,JSONObject?>> {
+            if (it.first == selected.subjectId) -1 else MovieboxPlayback.audioOrder(it.second)
+        }.thenBy { MovieboxPlayback.audioName(it.second) })
+        var preferredHost: String? = null
+        for ((subject,audio,initialDetail) in orderedSubjects) {
+            val meta = if (subject == selected.subjectId) initialDetail else metadata(subject)
             val detail = meta ?: initialDetail ?: JSONObject()
+            val encodedPath = URLEncoder.encode(MovieboxPlayback.detailPath(detail),"UTF-8")
             val webDetail = MovieboxPlayback.text(detail,"detailUrl")
-            val path = if (MovieboxPlayback.http(webDetail)) URI(webDetail).path.trimEnd('/').substringAfterLast('/')
-                else MovieboxPlayback.text(detail,"detailPath").trimEnd('/').substringAfterLast('/')
-            val encodedPath = URLEncoder.encode(path,"UTF-8")
             val fromDetail = if (MovieboxPlayback.http(webDetail)) URI(webDetail).let { "${it.scheme}://${it.host}" } else null
-            // CS3 web domains are routing aliases, not seven independent stream types.
-            val hosts = (listOfNotNull(fromDetail?.takeIf { it in MovieboxPlayback.webDomains }) + MovieboxPlayback.webDomains).distinct()
-            // Once video exists, cap redundant H5 routing probes. When all video routes failed,
-            // try the complete evidence-backed alias list, always with the same episode.
-            for (host in if (emitted.isNotEmpty()) hosts.take(2) else hosts) {
+            val hosts = (listOfNotNull(preferredHost,fromDetail?.takeIf { it in MovieboxPlayback.webDomains }) +
+                MovieboxPlayback.webDomains).distinct()
+            // A failed/empty alias must not hide H5 sources on later aliases, including dubbed subjects.
+            for (host in hosts) {
                 val url = "$host/wefeed-h5api-bff/subject/play?${query(subject)}&detailPath=$encodedPath" +
                     "&streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1"
                 val referer = "$host/movies/$encodedPath?id=$subject&type=/movie/detail&detailSe=&detailEp=&lang=en"
-                val headers = mutableMapOf("User-Agent" to MovieboxPlayback.WEB_UA,"Referer" to referer,
-                    "Accept" to "application/json","x-client-info" to "{\"timezone\":\"Asia/Calcutta\"}",
-                    "x-request-lang" to "en","x-source" to "")
-                // No restriction override headers from CS3. No API bearer to third-party aliases.
-                if (host == "https://h5-api.aoneroom.com" && modernBearer != null)
-                    headers["Authorization"] = "Bearer $modernBearer"
-                val response = playbackRequest(url,headers) ?: continue
-                if (response.first == 200 && emit(response.second,"H5",subject,host,referer,audio) > 0) break
+                val response = playbackRequest(url,webHeaders(host,referer)) ?: continue
+                if (response.first == 200 && collectStreams(response.second,subject,host,referer,audio) > 0) {
+                    preferredHost = host
+                    break
+                }
             }
         }
+        // Global, deterministic labels: one audio name, one media format, one codec.
+        // CloudStream adds the quality itself; do not repeat "1080p" in the source name.
+        val orderedChoices = choices.values.sortedWith(compareBy<PlaybackChoice> {
+            MovieboxPlayback.audioOrder(it.stream.audio)
+        }.thenBy { MovieboxPlayback.audioName(it.stream.audio) }
+            .thenByDescending { it.stream.quality ?: 0 }
+            .thenBy { MovieboxPlayback.codecOrder(it.stream.codec) }
+            .thenBy { it.format.ordinal })
+        val labelCounts = mutableMapOf<String,Int>()
+        for (choice in orderedChoices) {
+            val stream = choice.stream
+            val label = MovieboxPlayback.label(stream,choice.format)
+            val group = "$label|${stream.quality}"
+            val number = (labelCounts[group] ?: 0) + 1
+            labelCounts[group] = number
+            val finalLabel = label + if (number > 1) " • Server $number" else ""
+            val type = when (choice.format) {
+                MovieboxPlayback.Format.DASH -> ExtractorLinkType.DASH
+                MovieboxPlayback.Format.HLS -> ExtractorLinkType.M3U8
+                MovieboxPlayback.Format.VIDEO -> ExtractorLinkType.VIDEO
+            }
+            callback(newExtractorLink(name,finalLabel,stream.url,type) {
+                this.headers = choice.headers
+                this.referer = choice.referer
+                stream.quality?.let { this.quality = it }
+            })
+        }
         // Each validated stream/resource ID owns its captions; the selected serial index is unchanged.
-        for ((identity,profile) in captionIds) {
+        for ((identity,audio) in captionIds) {
             val (subject,stream) = identity
-            val (source,audio) = profile
             val params = listOf(
                 "get-stream-captions" to "streamId=${URLEncoder.encode(stream,"UTF-8")}&subjectId=$subject",
                 "get-ext-captions" to "episode=0&resourceId=${URLEncoder.encode(stream,"UTF-8")}&subjectId=$subject")
             for ((endpoint,q) in params) {
                 val url = "$api/wefeed-mobile-bff/subject-api/$endpoint?$q"
-                val ts = System.currentTimeMillis().toString()
-                val pathQuery = URI(url).let { it.rawPath + "?" + it.rawQuery }
-                val legacyHeaders = headersFor(ts,generateSignature("GET",pathQuery,ts),normalBearer)
-                // Preserve the old working caption signature/profile for streams returned by v2.
-                var response = playbackRequest(url,if (source == "V2") legacyHeaders else modernPlaybackHeaders(url,modernBearer))
-                if (response == null || response.first != 200) response = playbackRequest(url,
-                    if (source == "V2") modernPlaybackHeaders(url,modernBearer) else legacyHeaders)
+                var response = playbackRequest(url,modernPlaybackHeaders(url,modernBearer))
+                if (response == null || response.first != 200) {
+                    val bearer = legacyBearer()
+                    if (bearer != null) {
+                        val ts = System.currentTimeMillis().toString()
+                        val pathQuery = URI(url).let { it.rawPath + "?" + it.rawQuery }
+                        response = playbackRequest(url,headersFor(ts,generateSignature("GET",pathQuery,ts),bearer))
+                    }
+                }
                 if (response == null || response.first != 200) continue
                 try { MovieboxPlayback.captionEntries(response.second).forEach { (language,url) ->
-                    if (subtitleUrls.add(url)) subtitleCallback(newSubtitleFile(language + audio.takeIf { it.isNotBlank() }?.let { " ($it Audio)" }.orEmpty(),url))
+                    if (subtitleUrls.add(url)) subtitleCallback(newSubtitleFile(language + audio.takeIf { it.isNotBlank() }?.let { " (${MovieboxPlayback.audioName(it)})" }.orEmpty(),url))
                 } } catch (_: Exception) { Log.d(TAG,"[SUBTITLE] invalid $endpoint response") }
             }
         }
-        if (emitted.isEmpty()) Log.e(TAG,"[PLAYBACK] all routes failed se=$se ep=$ep")
-        return emitted.isNotEmpty()
+        if (choices.isEmpty()) Log.e(TAG,"[PLAYBACK-H5] no validated resource subject=${selected.subjectId} se=$se ep=$ep")
+        return choices.isNotEmpty()
     }
 
     data class RankingResponse(val code: Int?, val data: RankingData?)
