@@ -17,19 +17,28 @@ import kotlinx.coroutines.ensureActive
 
 /** JavHey-only adapters for the player structures captured from its sources. */
 internal object JavHeyPlayers {
-    private val streamHosts = setOf("hgplaycdn.com", "dhtpre.com", "iplayerhls.com")
+    // hgcloud.to/main.js advertises these destinations and preserves path/query.
+    private val hgDestinations = listOf("hanerix.com", "audinifer.com", "vibuxer.com")
+    private val streamHosts = setOf("hgplaycdn.com", "dhtpre.com", "iplayerhls.com") + hgDestinations
     private val luluHosts = setOf("luluvdo.com", "luluvdoo.com")
     // These embed pages already contain the player; no speculative POST endpoint.
     private val luluPageHosts = setOf("luluvido.com")
     private val html5Hosts = setOf("javsubindo.world")
 
-    fun supports(host: String): Boolean = host.removePrefix("www.") in streamHosts + luluHosts + luluPageHosts + html5Hosts
+    fun supports(host: String): Boolean = host.removePrefix("www.") in streamHosts + luluHosts + luluPageHosts + html5Hosts + "hgcloud.to"
 
     suspend fun load(url: String, movie: String, subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit): Boolean {
         try {
             val uri = URI(url)
             val host = uri.host.lowercase().removePrefix("www.")
+            if (host == "hgcloud.to") {
+                for (destination in hgDestinations) {
+                    val target = "https://$destination${uri.rawPath}" + (uri.rawQuery?.let { "?$it" } ?: "")
+                    if (load(target, url, subtitleCallback, callback)) return true
+                }
+                return false
+            }
             val origin = "${uri.scheme}://${uri.rawAuthority}"
             val response = if (host in luluHosts) {
                 app.post("$origin/dl", data = mapOf(

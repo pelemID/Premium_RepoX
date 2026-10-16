@@ -206,12 +206,16 @@ open class ByseSXLocal : ExtractorApi() {
     }
 
     private fun getCodeFromUrl(url: String): String {
-        return URI(url).rawPath?.trimEnd('/')?.substringAfterLast('/') ?: ""
+        val parts = URI(url).rawPath.orEmpty().split('/').filter { it.isNotEmpty() }
+        // /e/CODE/title-slug uses CODE; the optional title is not an API ID.
+        return if (parts.firstOrNull() in setOf("e", "embed")) parts.getOrNull(1).orEmpty()
+            else parts.lastOrNull().orEmpty()
     }
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
         val refererUrl = getBaseUrl(url)
         val code = getCodeFromUrl(url)
+        if (code.isBlank()) return
         
         val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
         val detailsResponse = app.get(detailsUrl)
@@ -224,6 +228,7 @@ open class ByseSXLocal : ExtractorApi() {
         val embedFrameUrl = playbackUrl(details.embedFrameUrl, url) ?: return
         val embedBase = getBaseUrl(embedFrameUrl)
         val embedCode = getCodeFromUrl(embedFrameUrl)
+        if (embedCode.isBlank()) return
         
         val playbackApiUrl = "$embedBase/api/videos/$embedCode/embed/playback"
         // Byse's API expects the original Byse embed URL as its parent (not the movie page).
