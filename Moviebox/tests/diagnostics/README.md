@@ -1,85 +1,102 @@
-# Reacher diagnostic kit V2 (tanpa root)
+# Reacher diagnostic kit V3 (tanpa root)
 
-Kit ini **tidak memperbaiki atau mengganti playback**. Tidak memasang APK Mod, membaca akun,
-mengakses data privat aplikasi, menangkap HTTPS aplikasi lain, mengubah DNS/region/TLS,
-mengekspor token, atau memulai unduhan video. Kode ini tidak masuk ke plugin produksi.
+V3 memeriksa kandidat MP4 yang benar-benar dikembalikan untuk Reacher, **bukan patch
+playback**. Plugin produksi tetap versi 15. Tidak memasang APK Mod, membaca data privat
+aplikasi, menangkap HTTPS aplikasi lain, memakai akun lain, mengubah region/TLS, mengekspor
+cookie/token/URL media, atau mengunduh video penuh.
 
-## Termux
+## Jalankan di Termux
 
-Ekstrak `Reacher_Diagnostic_Kit_V2.zip` ke folder Download. Di Termux jalankan:
+Ekstrak `Reacher_Diagnostic_Kit_V3.zip` ke Download. Jalankan:
 
 ```bash
-bash /storage/emulated/0/Download/Reacher_Diagnostic_Kit_V2/RUN_TERMUX.sh
+bash /storage/emulated/0/Download/Reacher_Diagnostic_Kit_V3/RUN_TERMUX.sh
 ```
 
-Script memasang Python jika diperlukan dan meminta izin penyimpanan standar Termux.
-Masukkan ID atau **tautan detail hasil Share** untuk entri Reacher yang dipilih.
-Enter memakai ID awal `3620534210064175096`. Masukkan juga satu serial yang sudah bisa
-berjalan sebagai pembanding. Untuk memeriksa entri Indonesia, jalankan ulang dengan tautan
-Share entri Indonesia; jangan menebak ID dari judul/poster. Tidak perlu memasang APK Mod.
+Tekan **Enter pada kedua pertanyaan** untuk memeriksa Reacher asli dan versi Indonesia
+secara otomatis. Indonesia diikuti hanya jika server kembali menyatakan hubungan dub-nya.
+Kolom kedua opsional untuk judul pembanding yang berbeda dan sudah berhasil.
+Script memasang Python jika belum tersedia dan meminta izin penyimpanan standar Termux.
+Output `Reacher_Diagnostic_<waktu>_<acak>.zip` berada di Download; kirim ZIP tersebut.
+Script bisa memerlukan beberapa menit jika CDN timeout. Tidak perlu mengirim kredensial,
+raw logcat, URL video, atau memasang APK Mod.
 
-Output `Reacher_Diagnostic_<waktu>_<acak>.zip` langsung berada di Download. Kirim ZIP itu
-bersama tautan Share entri Reacher asli/Indonesia/S1-S4 yang tersedia. Jangan kirim token,
-cookie, password, raw logcat, atau URL media bertanda tangan.
+## Bukti yang mendasari V3
 
-## Yang dilakukan probe
+Hasil V2 dari HP pengguna, tersimpan sebagai fixture `phone_reacher_native_20261016.json`:
 
-- Satu host API yang sama dengan katalog plugin; tidak berpindah host/region ketika ditolak.
-- Protokol guest katalog **yang sudah ada**, bukan klaim profil runtime APK 50020133.
-  Konfigurasi publik diambil dari source commit baseline yang dipatok hash; signing key
-  dibaca hanya di memori. Sesi guest baru dan ID instance acak milik probe tidak disimpan.
-  Tidak menggunakan profil/device-bound oracle yang tertinggal dalam kode lama.
-- Hanya GET: bootstrap guest, `dub-info`, `get`, `season-info`, dan `resource`.
-  V2 menambahkan GET `play-info` diagnostik **hanya S1E1** untuk dua ID Reacher yang telah
-  dibuktikan dub-info dari HP pengguna, setelah metadata subject cocok. Ini tidak mengaktifkan
-  sumber native di plugin, tidak mengambil media, tidak melakukan callback atau start-download.
-  `--metadata-only` dapat melewati pemeriksaan tersebut. Whitelist produksi tidak berubah.
-- Query API diurutkan alfabetis pada wire URL dan canonical signature. Kit pertama memakai
-  urutan insertion untuk resource; V2 disamakan dengan helper Kotlin playback terverifikasi.
-  Signature resource V2 telah dibandingkan dengan pemanggilan helper Kotlin asli dan cocok.
-  Ini koreksi kit; belum membuktikan 407 di HP sudah teratasi atau memperbaiki plugin.
-- Hubungan subject hanya berasal dari `dub-info`, maksimal tiga subject terkait yang masuk
-  kategori Asli/Indonesia/Inggris. Tidak melakukan pencarian atau pemadanan judul otomatis.
-- S1E1, lalu S1E2 hanya bila season metadata mencantumkannya. Sparse `allEp` didahulukan;
-  `maxEp` menjadi rentang indeks saat `allEp` kosong, sesuai APK. Daftar episode **bukan**
-  bukti media tersedia. Tidak menggeser season/episode untuk mencari hasil yang berhasil.
-- Parameter resource mengikuti kontrak APK; identitas subject dan indeks item diperiksa.
-  URL download tidak diperlakukan sebagai stream. HTTP 401/403/441, termasuk code error
-  dalam HTTP 200, serta 407, dihentikan dan dicatat sebagai hambatan akses, bukan resource tidak ada.
-- JSON keluaran hanya berisi field yang diizinkan: ID, judul/tahun metadata, hubungan dub,
-  path detail tanpa query, indeks season/episode/resource, HTTP/code, struktur/jumlah item.
-  V2 juga menyimpan ID/type/resolusi resourceDetectors, bentuk detailUrl tanpa nilainya,
-  klasifikasi pesan error, dan kandidat/notice native tanpa URL/cookie. Header, body mentah,
-  pesan error mentah, URL media, cookie dan kunci tidak ditulis.
-- Request identik memakai cache. Jika kolom pembanding menunjuk anggota keluarga Reacher
-  yang sama, output menandainya; itu belum menjadi kontrol judul lain yang berhasil.
-- `media_validation=NOT_TESTED` dan `device_playback=NOT_TESTED` sengaja dipertahankan:
-  probe metadata tidak membuktikan manifest/segmen valid atau video berhasil diputar.
+- Guest, `get`, `dub-info`, `season-info`, dan `resource`: HTTP 200/code 0.
+- Server menghubungkan asli `3620534210064175096` dengan Indonesia `4149489342181954296`.
+  Tidak ada subject dub Inggris terpisah pada respons ini; bahasa asli tidak diasumsikan.
+- Native `play-info` S1E1: dua kandidat MP4 asli dan satu kandidat MP4 Indonesia.
+  Bukan URL notice yang telah dikenal, tetapi isi/durasinya **belum diperiksa** oleh V2.
+- `detailUrl` kosong pada kedua edisi. `PLAY_URL_WEB` memiliki URL kosong, sehingga bukan
+  tujuan player yang bisa digunakan. H5 sebelumnya kosong untuk konteks yang diuji.
+- Audit lanjutan DTO APK menemukan `DownloadListBean.items` sebenarnya memakai
+  `@SerializedName("list")`; `DownloadItem.url` memakai `@SerializedName("resourceLink")`.
+  Kit V2 membaca nama properti Kotlin, sehingga angka nol resource V2 **tidak membuktikan
+  respons resource kosong**. V3 membaca nama JSON sesuai APK. Ini koreksi kit diagnostik,
+  bukan bukti bug parser H5 produksi atau alasan mengganti sistem playback.
+
+## Pemeriksaan yang dilakukan
+
+- Guest katalog yang sudah ada, instance acak milik probe, satu host API yang sama.
+  Ini **bukan capture runtime APK resmi**. Sesi/token/kunci hanya di memori.
+  Source protokol publik dipatok commit dan SHA-256; tidak menyimpan source atau profil
+  device-bound lama. Query wire dan canonical signature tetap diurutkan seperti V2.
+- Hanya endpoint yang sudah dibuktikan: guest bootstrap, `dub-info`, `get`, `season-info`,
+  `resource`, dan diagnostik `play-info`. Tidak memindai host atau kombinasi episode acak.
+- Hanya dua ID Reacher terbukti boleh menjalankan pemeriksaan media, setelah `get` cocok.
+  S1E1 dan perbandingan S1E2 hanya bila dideklarasikan metadata season. Indeks tidak digeser.
+  Tidak pernah menggunakan S1E2 sebagai fallback S1E1. Respons dengan identitas eksplisit
+  yang berbeda tidak diperiksa medianya. Bahasa selain whitelist tidak diminta.
+- `resource.list` dicocokkan dengan subject/se/ep; maksimal dua item tepat per episode
+  diperiksa medianya, sedangkan metadata ID tetap dicatat. Link resource tetap dianggap metadata
+  download: pemeriksaan sampel tidak otomatis mempromosikannya menjadi sumber player.
+  Jika array tidak ada, jumlah resource tepat dilaporkan UNKNOWN, bukan nol.
+- Media memakai GET Range, maksimal 12 URL+cookie unik, 36 request, 64 KiB per respons
+  (batas baca aplikasi 2.25 MiB keseluruhan), timeout 8 detik, anggaran 150 detik untuk
+  memulai request media. Metadata API punya batas waktu sendiri. Jika server mengabaikan
+  Range, stream tetap ditutup setelah sampel terbatas. Tidak menyimpan byte media.
+- Inspeksi format MP4, struktur `moov/mvhd`, durasi, track audio/video. Jika `moov` berada
+  setelah `mdat`, probe melompat dengan offset box/Range, bukan membaca seluruh video.
+  Metadata besar di luar batas dilaporkan BLOCKED, bukan diloloskan secara spekulatif.
+  Format selain MP4 pada probe ini NOT_TESTED; validator HLS/DASH produksi tidak diubah.
+- Episode dengan MP4 berdurasi di bawah 300 detik ditolak sebagai video pendek yang belum
+  terbukti episode. Notice dengan URL dikenal, HTML/JSON/error HTTP, marker akses/member,
+  dan redirect notice tidak diloloskan. Durasi panjang sendiri bukan bukti episode benar.
+- HTTPS dengan TLS standar, alamat jaringan publik saja. Bearer/header API tidak diberikan
+  ke CDN. Cookie yang dikembalikan untuk kandidat hanya dipakai pada origin awal yang sama,
+  dan dilepas pada redirect lintas origin. Tidak ada proxy, bypass, atau autentikasi fiktif.
+- URL+cookie dibandingkan secara persis dan disimpan hanya di memori. Signature/query
+  berbeda tidak digabungkan. Output memberi label sementara `media-1`, dst; penggunaan
+  URL sama antar-episode/edisi ditandai. Ini petunjuk notice atau pemetaan salah, bukan
+  keputusan otomatis bahwa semua versi tersebut pasti salah.
+- Keluaran hanya ID, indeks, jumlah, struktur, metadata numerik, klasifikasi error, HTTP,
+  byte count, durasi container, track, checksum sampel, dan label pembanding. Tidak ada
+  cookie, token, kunci, body/pesan error mentah, URL atau query media yang ditulis.
+
+**Arti PASS pada satu media check:** HTTP, container MP4, durasi minimal, dan track terbaca
+pada sampel. Bukan decode, bukan verifikasi visual judul/episode, bukan pemutaran Android.
+`decode` dan `device_playback` tetap NOT_TESTED. Respons sintetis pada unit test juga bukan
+bukti Reacher playable. Hasil ini diperlukan sebelum adapter produksi dapat dipertimbangkan.
+
+Tanpa pemeriksaan media, gunakan `python reacher_diagnostic.py --metadata-only`.
 
 ## Opsional: log plugin melalui ADB yang sudah diizinkan
 
-Android membatasi log aplikasi lain. Termux biasa **tidak** otomatis dapat membacanya.
-Jika Android 11+ menyediakan Wireless debugging, gunakan `pkg install android-tools`,
-pasangkan dengan `adb pair ALAMAT_HP:PORT_PAIR`, masukkan kode yang tampil di HP sendiri,
-lalu `adb connect ALAMAT_HP:PORT_DEBUG` (kedua port biasanya berbeda). Jangan membagikan kode
-pairing. Alternatif: gunakan ADB komputer yang sudah diotorisasi. Tidak perlu root atau MITM.
-
-Setelah `adb devices` menunjukkan perangkat milik Anda tersambung:
+Termux biasa tidak otomatis dapat membaca log aplikasi lain atau traffic HTTPS aplikasi
+MovieBox. Jika perangkat menyediakan Wireless debugging dan Anda sudah memasangkan ADB
+milik sendiri, jalankan:
 
 ```bash
 python reacher_diagnostic.py --logs-only --adb-seconds 90 --out /storage/emulated/0/Download
 ```
 
-Selama 90 detik, buka Reacher S1E1 di CloudStream/AdiXtream dengan plugin versi 15, lalu satu
-serial pembanding. Hanya field log Moviebox yang dikenali direkonstruksi: endpoint/status,
-subject/se/ep, ketersediaan detailPath, parsed/audioFiltered/candidates/validated. Raw log tidak
-pernah disimpan, dan buffer log perangkat tidak dihapus. Jika tidak ada log yang dapat diakses,
-hasilnya BLOCKED; ini tidak mengklaim telah menangkap traffic aplikasi MovieBox resmi.
-
-ADB ini membuktikan perilaku plugin terpasang, **bukan request bisnis APK resmi**. Jika probe
-masih ditolak dan log plugin belum menjawab pemetaan, bukti berikutnya harus berupa export
-metadata/diagnostik yang memang disediakan aplikasi resmi atau log yang sudah disanitasi
-melalui mekanisme debug yang diizinkan. Kit tidak melewati TLS pinning atau autentikasi.
+Buka Reacher S1E1 di CloudStream dengan plugin versi 15, kemudian judul pembanding.
+Hanya field log Moviebox yang dikenal direkonstruksi. Tidak menyimpan raw log, menghapus
+buffer log, meminta root, atau melewati TLS pinning. Tanpa akses log yang diizinkan, hasil
+BLOCKED. Ini tidak mengklaim menangkap request aplikasi MovieBox resmi.
 
 ## Pengujian pengembang
 
@@ -87,18 +104,6 @@ melalui mekanisme debug yang diizinkan. Kit tidak melewati TLS pinning atau aute
 python -m unittest discover -s Moviebox/tests/diagnostics -v
 ```
 
-Fixture sintetis menguji sanitasi, pemetaan subject/episode, berhenti saat akses ditolak,
-dan integritas source yang dipatok. Hasilnya tidak membuktikan Reacher dapat streaming.
-
-## Hasil HP yang memicu V2
-
-ZIP pertama membuktikan sesi guest berhasil dan pemetaan server:
-Asli `3620534210064175096` ↔ Indonesia `4149489342181954296`.
-Metadata asli mendeklarasikan empat season, Indonesia dua season, masing-masing delapan
-episode; ini bukan bukti episode tersebut memiliki media playable. `resource` S1E1/S1E2
-mendapat 407. Pesan 407 tidak disimpan kit pertama sehingga penyebabnya belum terbukti.
-Tidak ada cookie/token/URL media yang perlu Anda kirim.
-
-Jalankan V2 sekali dengan Enter untuk ID awal; versi Indonesia ditelusuri otomatis jika
-server kembali memberikan pemetaan tersebut. Kolom pembanding boleh dikosongkan. Kirim
-ZIP baru yang memiliki `version: 2`, bukan hasil kit lama.
+Fixture nyata V1/V2 membuktikan hanya metadata/HTTP dari HP. Fixture MP4 sintetis menguji
+parser, batas baca/Range, redirect/cookie, notice, identitas dan privasi. Semua tetap terpisah
+dari kode produksi dan pengujian pemutaran perangkat.

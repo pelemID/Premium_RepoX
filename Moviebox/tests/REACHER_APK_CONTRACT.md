@@ -186,3 +186,56 @@ server explicitly marks it original. It also returns the same dub family inline 
 so adding dub-info alone is not demonstrated to fix the production resolver. The next
 unknown is actual resource/native media under a valid request contract, not a guessed title
 replacement. hasResource=true still does not establish playable media.
+
+## Follow-up V2 phone results and serialized resource contract
+
+MAIN_BEFORE: `f581c0a21130b83b0bcd5a73d5853b0a33146822`.
+Archive `Reacher_Diagnostic_20261016_195727_5689bf.zip` is preserved as sanitized fixture
+`diagnostics/phone_reacher_native_20261016.json` with its SHA-256. No media URL or token was
+supplied. The original and Indonesian metadata, dub-info, seasons and all four exact episode
+resource requests now returned HTTP 200/code 0. The prior 407 is no longer observed after
+V2 sorted signing; this is not a controlled proof that sorting alone caused that change.
+
+Original S1E1 native play-info returned MP4 IDs `689473467628014120` and
+`7667675295478346328`; Indonesian S1E1 returned MP4 ID `3834879483056636352`.
+URLs had no query, no signed cookie and did not match the existing known-notice patterns.
+No media bytes were fetched. Identity was REQUEST_CONTEXT_ONLY: the native response does
+not echo the full subject/se/ep. The APK likewise attaches requested se/ep after parsing.
+This is useful native-path evidence, but not proof that these URLs contain Reacher episodes.
+
+Both get detailUrl values were empty. Original collection detector ID is
+`7685587439406445144`, Indonesian is `2889787666332115640`; each is type 1 (collection),
+not an episode resource ID. PLAY_URL_WEB still has no URL, so it cannot supply playback.
+
+Further DTO inspection found a diagnostic bug: in
+`com.transsnet.downloader.bean.DownloadListBean` (classes8.dex), `items` has
+`@SerializedName("list")`, and resolutionList has `@SerializedName("collectionResolutions")`.
+In `com.transsion.moviedetailapi.DownloadItem`, `url` has
+`@SerializedName("resourceLink")`, and `extSubtitle` has `@SerializedName("extCaptions")`.
+V2 sanitized only `items`/`url`; its zero exact resource counts cannot establish that the
+actual resource responses lacked episodes. The raw bodies were never saved, so this cannot
+be reconstructed from V2. No production H5 parser is implicated by this diagnostic-only bug.
+
+V3 fixes those wire names, reports missing arrays as UNKNOWN, and adds an optional bounded
+MP4 HTTP/container check, enabled in the Termux wrapper. Exact Reacher S1E1 and declared
+S1E2 are compared without substitution; resource media checks require exact subject/se/ep.
+Numeric native/resource duration, size and resolution metadata are now sanitized too.
+Credentials/URLs remain in RAM, API bearer is never sent to media, cookies stay on their
+initial origin, and private/non-HTTPS destinations, access markers and known notices stop.
+12 unique URL+cookie candidates / 36 requests / 64 KiB per response / 150-second start budget
+bound the media probe. It reads MP4 headers, movie duration and track types, not full movies.
+It detects identical URLs across episode/audio contexts without exporting their values.
+A container PASS explicitly leaves decode/device playback NOT_TESTED.
+
+Current cause classification: A identity is proved by server; B detailUrl is empty, with no
+server-provided alternative path; C no episode offset established; D dub-info matches inline
+get and is not sufficient to fix H5; E native candidates exist, actual media validity remains
+UNKNOWN; F cannot conclude that the service has no resources. Reacher production recovery
+remains BLOCKED pending bounded media evidence, then actual player verification. No native
+adapter is shipped speculatively. Production version 15 and all source/audio/subtitle/validator
+behavior remain unchanged. The kit and fixtures are the only implementation changes.
+
+Validation for V3: 36 diagnostic tests PASS (including sanitized real phone fixture and
+synthetic MP4/Range/redirect/privacy/identity cases); baseline 29 schema/media regressions
+and 20 provider/local HTTP integration tests PASS; production Kotlin compilation against
+actual CloudStream SDK PASS. These are not official-APK runtime or device playback tests.

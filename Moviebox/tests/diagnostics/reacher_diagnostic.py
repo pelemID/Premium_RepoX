@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from reacher_media_probe import MediaProbe
 
 BASE = 'https://api3.aoneroom.com'
 PREFIX = '/wefeed-mobile-bff/subject-api/'
@@ -25,12 +26,18 @@ SOURCE_HASH = '7bbc358a31a7f3f874cb35d0fba0140c6e9d662e6c6904a6dcb85e560c20df0c'
 SEED = '3620534210064175096'
 # Proven by the user's own 2026-10-16 dub-info response, diagnostic scope only.
 REACHER_IDS = {SEED, '4149489342181954296'}
-FIELDS = ('subjectId','dubs','seasons','items','streams','dash','hls','resourceDetectors',
+FIELDS = ('subjectId','dubs','seasons','items','list','streams','dash','hls','resourceDetectors',
           'detailPath','detailUrl','hasResource','playUrl','pager','resourceId','resolutionList')
 
 
 def objects(value):
     return [item for item in value if isinstance(item,dict)] if isinstance(value,list) else []
+
+
+def resource_items(data):
+    # DownloadListBean.items is @SerializedName("list"); DownloadItem.url is
+    # @SerializedName("resourceLink"). Kotlin property names are not the wire schema.
+    return objects(data.get('list')) if 'list' in data else objects(data.get('items'))
 
 
 def identity(value):
@@ -124,7 +131,7 @@ def summary(data):
     for key in ('hasResource','vipLocked','limited'):
         if type(data.get(key)) is bool:
             out[key] = data[key]
-    for key in ('streams','dash','hls','resourceDetectors','items'):
+    for key in ('streams','dash','hls','resourceDetectors','items','list'):
         if isinstance(data.get(key),list):
             out[key+'_count'] = len(data[key])
     title = data.get('title',data.get('subjectTitle'))
@@ -158,13 +165,14 @@ def summary(data):
             eps = s.get('allEp')
             if isinstance(eps,str) and re.fullmatch(r'[0-9, -]{0,3000}',eps): item['allEp'] = eps
             out['seasons'].append(item)
-    if isinstance(data.get('items'),list):
+    if isinstance(data.get('list',data.get('items')),list):
         out['resources'] = []
-        for d in data['items'][:30]:
+        for d in resource_items(data)[:30]:
             if isinstance(d,dict):
                 out['resources'].append({'resourceId':identity(d.get('resourceId','')),
                     **{k:d[k] for k in ('se','ep','resolution','linkType') if type(d.get(k)) is int},
-                    'url_present':isinstance(d.get('url'),str) and bool(d['url']),
+                    'url_present':bool(d.get('resourceLink',d.get('url'))) if isinstance(d.get('resourceLink',d.get('url')),str) else False,
+                    **numeric_metadata(d),
                     'media_validated':'NOT_TESTED'})
     for group in ('streams','dash','hls'):
         if isinstance(data.get(group),list):
@@ -172,12 +180,22 @@ def summary(data):
                 'format':str(d.get('format','')).upper() if str(d.get('format','')).upper() in ('DASH','HLS','MP4','DEFAULT') else 'UNKNOWN',
                 'url_shape':url_shape(d.get('url')), 'known_notice':known_notice(d.get('url')),
                 'signed_cookie_present':bool(d.get('signCookie')),
+                **numeric_metadata(d),
                 'media_validated':'NOT_TESTED'} for d in objects(data[group])[:10]]
     play = data.get('playUrl')
     if isinstance(play,dict):
         typ = play.get('urlType')
         out['play_url_type'] = typ if typ in ('PLAY_URL_ANDROID','PLAY_URL_WEB') else 'UNKNOWN'
         out['play_url_present'] = bool(play.get('playUrl'))
+    return out
+
+
+def numeric_metadata(data):
+    out={}
+    for key in ('duration','size','resolutions','resolution','requireMemberType'):
+        raw=data.get(key)
+        if type(raw) in (int,float) and 0 <= raw <= 10**13: out[key+'_raw']=raw
+        elif isinstance(raw,str) and re.fullmatch(r'[0-9]{1,13}(?:\.[0-9]{1,3})?',raw): out[key+'_raw']=raw
     return out
 
 
@@ -262,7 +280,7 @@ def denied(record):
     return record.get('http') in (401,403,407,441) or str(record.get('code')) in ('401','403','407','441')
 
 
-def probe(client,seeds,inspect_playback=False):
+def probe(client,seeds,inspect_playback=False,media=None):
     report = {'request_profile':'existing provider catalog guest; NOT official APK runtime parity',
               'device_playback':'NOT_TESTED','media_validation':'NOT_TESTED','requests':[],'relationships':[],
               'signing_query_order':'ALPHABETICAL_WIRE_AND_CANONICAL'}
@@ -302,7 +320,8 @@ def probe(client,seeds,inspect_playback=False):
             report['requests'][-1]['audio_context'] = cat
             # Default Reacher S1E1; S1E2 only when explicitly present in allEp.
             episodes = [ep] + ([ep+1] if se == 1 and ep == 1 and episode_declared(season_data,se,ep+1) else [])
-            if inspect_playback and target in REACHER_IDS and identity(detail.get('subjectId'))==target and se==1 and ep==1 and episode_declared(season_data,1,1):
+            scoped=target in REACHER_IDS and identity(detail.get('subjectId'))==target and se==1 and ep==1
+            if inspect_playback and scoped and episode_declared(season_data,1,1):
                 # Read-only native contract diagnostic; never a production source/callback.
                 # No download URL is promoted to media and no URL/cookie is saved.
                 native,body=ask('play-info',target,{'subjectId':target,'se':se,'ep':ep})
@@ -311,7 +330,18 @@ def probe(client,seeds,inspect_playback=False):
                 native['response_identity']='MISMATCH' if mismatch else (
                     'EXPLICIT_MATCH' if all(k in body for k in ('subjectId','se','ep')) else 'REQUEST_CONTEXT_ONLY')
                 native['requested_se']=se; native['requested_ep']=ep
-                native['purpose']='NATIVE_CONTRACT_DIAGNOSTIC_ONLY_NO_MEDIA_FETCH'
+                native['purpose']='DIAGNOSTIC_ONLY_NO_PRODUCTION_CALLBACK'
+                if media is not None and not mismatch and not denied(native):
+                    native['media_checks']=check_candidates(media,body,target,se,ep,'native',known_notice)
+                # Compare E2 only under the same declared indices. Never substitute it for E1.
+                if media is not None and episode_declared(season_data,se,ep+1) and not denied(native):
+                    rec,other=ask('play-info',target,{'subjectId':target,'se':se,'ep':ep+1})
+                    rec['requested_se']=se;rec['requested_ep']=ep+1
+                    wrong=any(k in other and str(other[k])!=str(v) for k,v in (('subjectId',target),('se',se),('ep',ep+1)))
+                    rec['response_identity']='MISMATCH' if wrong else 'REQUEST_CONTEXT_ONLY'
+                    if not wrong and not denied(rec):
+                        rec['media_checks']=check_candidates(media,other,target,se,ep+1,'native',known_notice)
+                    rec['purpose']='E2_COMPARISON_NOT_E1_FALLBACK'
             for number in episodes:
                 if not episode_declared(season_data,se,number): continue
                 params = {'subjectId':target,'page':'1','perPage':10,'all':0,'startPosition':1,
@@ -321,12 +351,34 @@ def probe(client,seeds,inspect_playback=False):
                 # Resource URLs are download metadata, never promoted to playable streams here.
                 same = identity(resource.get('subjectId','')) == target
                 rec['exact_subject'] = same
+                rec['resource_array_present']=isinstance(resource.get('list',resource.get('items')),list)
                 rec['exact_episode_resources'] = sum(isinstance(item,dict) and item.get('se')==se and item.get('ep')==number
-                    for item in objects(resource.get('items'))) if same else 'UNKNOWN'
+                    for item in resource_items(resource)) if same and rec['resource_array_present'] else 'UNKNOWN'
+                if media is not None and scoped and same and not denied(rec):
+                    rec['resource_media_checks']=[]
+                    exact=[item for item in resource_items(resource)[:10] if item.get('se')==se and item.get('ep')==number]
+                    for item in exact[:2]:
+                        rec['resource_media_checks'].append(media.check(
+                            item.get('resourceLink',item.get('url')),None,target,se,number,'resource',
+                            identity(item.get('resourceId')),known_notice,restricted=restricted(resource) or restricted(item)))
                 if denied(rec):
                     rec['stop_reason']='RESOURCE_ACCESS_DENIED_NO_EPISODE_RETRY'
                     break
+    if media is not None:
+        report['media_validation']='BOUNDED_MP4_HTTP_CONTAINER_CHECKS_ONLY'
+        report['media_probe']=media.summary()
     return report
+
+
+def restricted(data):
+    return (data.get('vipLocked') is True or data.get('limited') is True or
+            str(data.get('requireMemberType','0')) not in ('0','None',''))
+
+
+def check_candidates(media,data,sid,se,ep,source,notice):
+    return [media.check(item.get('url'),item.get('signCookie'),sid,se,ep,source,
+                        identity(item.get('id')),notice,restricted=restricted(data) or restricted(item))
+            for item in objects(data.get('streams'))[:4]]
 
 
 def sanitize_log(line):
@@ -375,11 +427,12 @@ def main():
     parser.add_argument('--control-movie',action='store_true',help='Use 0/0 for the control')
     parser.add_argument('--adb-seconds',type=int,default=0)
     parser.add_argument('--metadata-only',action='store_true',help='Skip read-only play-info diagnostic')
+    parser.add_argument('--check-media',action='store_true',help='Bounded MP4 checks for proven Reacher IDs only; no player or full download')
     parser.add_argument('--logs-only',action='store_true',help='No network or guest session')
     parser.add_argument('--out',default=str(Path.home()/'storage/downloads' if (Path.home()/'storage/downloads').is_dir() else Path.cwd()))
     args=parser.parse_args(); seeds=[(subject(args.subject),1,1)]
     if args.control: seeds.append((subject(args.control),0 if args.control_movie else 1,0 if args.control_movie else 1))
-    report={'version':2,'selections':[{'subjectId':sid,'se':se,'ep':ep} for sid,se,ep in seeds]}
+    report={'version':3,'selections':[{'subjectId':sid,'se':se,'ep':ep} for sid,se,ep in seeds]}
     if not args.logs_only:
         client=Guest()
         try:
@@ -387,7 +440,8 @@ def main():
             boot,_=client.get('/wefeed-mobile-bff/tab/ranking-list',{'page':1,'perPage':1,'tabId':0})
             report['bootstrap']={'http':boot.get('http'),'code':boot.get('code'),'error_hint':boot.get('error_hint'),'guest_session_available':bool(client.token)}
             if denied(boot): report['probe']={'status':'BLOCKED','reason':'GUEST_BOOTSTRAP_DENIED'}
-            else: report['probe']=probe(client,seeds,inspect_playback=not args.metadata_only)
+            else: report['probe']=probe(client,seeds,inspect_playback=not args.metadata_only,
+                                       media=MediaProbe(notice=known_notice) if args.check_media and not args.metadata_only else None)
         except Exception as e: report['probe']={'status':'BLOCKED','reason':type(e).__name__}
         finally: client.token=None;client.key=None
     if args.adb_seconds: report['log_capture']=capture(max(1,min(120,args.adb_seconds)))
