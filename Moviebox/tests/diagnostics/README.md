@@ -107,3 +107,19 @@ python -m unittest discover -s Moviebox/tests/diagnostics -v
 Fixture nyata V1/V2 membuktikan hanya metadata/HTTP dari HP. Fixture MP4 sintetis menguji
 parser, batas baca/Range, redirect/cookie, notice, identitas dan privasi. Semua tetap terpisah
 dari kode produksi dan pengujian pemutaran perangkat.
+
+## Hasil nyata V3: jangan aktifkan kembali kandidat native/resource
+
+Hasil HP `Reacher_Diagnostic_20261016_202731_a7bb39.zip` sudah dianalisis. Seluruh sepuluh
+kandidat native/resource yang diperiksa untuk asli/Indonesia S1E1/S1E2 memakai URL+cookie yang
+sama. Satu GET Range (hasil dipakai cache) menemukan MP4 824.720 byte, durasi 22,708 detik.
+Seluruhnya ditolak: `SHORT_MEDIA_NOT_VERIFIED_EPISODE`. Metadata resource memang memuat episode,
+tetapi durasi katalog 3345/3276 detik tidak cocok dengan video yang dikirimkan. Fixture ringkas
+nyata ada di `phone_reacher_media_20261016.json`; visual/pesan video belum diketahui.
+
+Jangan mengulang V3 yang sama atau memakai kandidat tersebut sebagai fallback produksi.
+Bukti berikutnya: apakah aplikasi resmi terbaru yang tidak dimodifikasi benar-benar memutar
+Reacher asli S1E1 sampai adegan episode, beserta tautan Share edisinya. Bila hanya muncul
+pemberitahuan singkat, catat teksnya. Perekaman layar tidak dapat memperlihatkan header HTTPS;
+perbandingan request hanya melalui diagnostik resmi atau lingkungan debug yang diizinkan.
+Tidak perlu mengirim token/cookie/URL media atau memasang alat penyadapan.

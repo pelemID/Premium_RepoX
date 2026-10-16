@@ -32,6 +32,62 @@ class Opener:
 
 
 class MediaTests(unittest.TestCase):
+    def phone_v3(self):
+        return json.loads((Path(__file__).parent/'phone_reacher_media_20261016.json').read_text())
+
+    def test_real_phone_v3_all_native_resource_candidates_share_short_asset(self):
+        d=self.phone_v3()
+        self.assertEqual(len(d['episode_requests']),8)
+        candidates=[c for r in d['episode_requests'] for c in r['candidates']]
+        self.assertEqual(len(candidates),10)
+        self.assertEqual({c['media_key'] for c in candidates},{'media-1'})
+        self.assertTrue(all(r['http']==200 and r['code']=='0' for r in d['episode_requests']))
+        observation=d['media_observations'][0]
+        self.assertEqual(observation['status'],'FAIL')
+        self.assertEqual(observation['reason'],'SHORT_MEDIA_NOT_VERIFIED_EPISODE')
+        self.assertEqual(observation['duration_seconds'],22.708)
+        self.assertEqual(observation['http_checks'][0]['total_bytes'],824720)
+        self.assertEqual(d['media_probe']['http_requests'],1)
+        self.assertEqual(d['media_probe']['unique_candidates_checked'],1)
+        self.assertEqual(d['device_playback'],'NOT_TESTED')
+
+    def test_real_phone_v3_exact_episode_resource_ids_are_not_playback_proof(self):
+        d=self.phone_v3()
+        resources=[r for r in d['episode_requests'] if r['endpoint']=='resource']
+        expected={(kit.SEED,1):'8792116150390911208',(kit.SEED,2):'2342961483996361232',
+                  ('4149489342181954296',1):'2889787666332115640',
+                  ('4149489342181954296',2):'4488565534048641720'}
+        for r in resources:
+            self.assertTrue(r['exact_subject'])
+            self.assertEqual(r['requested_se'],1)
+            self.assertEqual(r['exact_episode_resources'],1)
+            item=r['candidates'][0]
+            self.assertEqual(item['resourceId'],expected[r['subjectId'],r['requested_ep']])
+            self.assertGreater(item['duration_raw'],3000)
+            self.assertEqual(item['size_raw'],'824720')
+            # Resource catalog duration does not describe the actual returned short MP4.
+            self.assertGreater(item['duration_raw'],d['media_observations'][0]['duration_seconds'])
+        contexts=d['media_probe']['shared_media'][0]['contexts']
+        self.assertEqual({(c['subjectId'],c['se'],c['ep']) for c in contexts},
+                         {(sid,1,ep) for sid in kit.REACHER_IDS for ep in (1,2)})
+
+    def test_observed_short_duration_is_rejected_with_synthetic_mp4_header(self):
+        # Header bytes are synthetic; the duration value comes from the real phone report.
+        # This regression proves parser rejection, never actual Reacher playback.
+        seconds=self.phone_v3()['media_observations'][0]['duration_seconds']
+        p=media.MediaProbe(fetch=lambda *a:({'status':'PASS','http':206},movie(seconds=seconds)))
+        out=p.inspect('https://fixture.test/episode',None)
+        self.assertEqual(out['status'],'FAIL')
+        self.assertEqual(out['reason'],'SHORT_MEDIA_NOT_VERIFIED_EPISODE')
+        self.assertAlmostEqual(out['duration_seconds'],seconds,places=3)
+        self.assertEqual(out['device_playback'],'NOT_TESTED')
+
+    def test_real_phone_fixture_excludes_session_and_media_urls(self):
+        text=json.dumps(self.phone_v3()).lower()
+        for forbidden in ('https://','http://','authorization','bearer ','cloudfront-policy',
+                          'signcookie','x-tr-signature','password'):
+            self.assertNotIn(forbidden,text)
+
     def test_actual_phone_v2_proves_candidate_metadata_only(self):
         d=json.loads((Path(__file__).parent/'phone_reacher_native_20261016.json').read_text())
         native=[r for r in d['probe']['requests'] if r['endpoint']=='play-info']

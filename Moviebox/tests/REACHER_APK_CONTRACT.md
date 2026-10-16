@@ -239,3 +239,71 @@ Validation for V3: 36 diagnostic tests PASS (including sanitized real phone fixt
 synthetic MP4/Range/redirect/privacy/identity cases); baseline 29 schema/media regressions
 and 20 provider/local HTTP integration tests PASS; production Kotlin compilation against
 actual CloudStream SDK PASS. These are not official-APK runtime or device playback tests.
+
+## V3 phone media evidence: candidate URLs are not episodes
+
+MAIN_BEFORE: `bfb6268e2d5788c66bc50e821820c6feb58377e2`.
+Owner-supplied `Reacher_Diagnostic_20261016_202731_a7bb39.zip` was inspected. A compact
+allowlisted fixture with archive SHA-256 is in `diagnostics/phone_reacher_media_20261016.json`.
+The existing catalog guest session succeeded on the owner's phone; all eight native/resource
+requests for the two proven subjects and S1E1/S1E2 returned HTTP 200/code 0.
+
+| Subject / episode | Native candidate IDs | Exact resource item ID | Delivered media |
+| --- | --- | --- | --- |
+| Original S1E1 | 689473467628014120, 7667675295478346328 | 8792116150390911208 | Same short MP4 |
+| Original S1E2 | 1189724869987108256, 2747395945552924568 | 2342961483996361232 | Same short MP4 |
+| Indonesian S1E1 | 3834879483056636352 | 2889787666332115640 | Same short MP4 |
+| Indonesian S1E2 | 8932954261240039928 | 4488565534048641720 | Same short MP4 |
+
+The corrected `list`/`resourceLink` reader establishes exact subject/season/episode resource
+metadata. Each resource response listed ten items spanning S1E1–S2E2 even when a single episode
+was requested; exact item filtering was therefore necessary. Nothing was substituted for the
+selected episode. The Indonesian detector ID also appears as its exact S1E1 resource item ID;
+ID equality alone therefore cannot classify collection versus episode context. Returned se/ep
+fields remain essential. This does not establish availability of later episodes' media.
+
+**All ten checked candidate contexts use exactly the same URL+cookie tuple**, not just a
+matching filename or checksum. The diagnostic cache labels this tuple media-1 and consequently
+performed only one media request. HTTPS GET Range returned 206, video/mp4, total 824,720 bytes;
+65,536 bytes were read. The MP4 movie header reports **22.708 seconds**, with video/audio tracks.
+Sample SHA-256: `f57afe0d01707491b0247582f14bdf9f23cf858c2f9c2d801cf8bdd1a98e88c2`.
+All ten associations are FAIL / SHORT_MEDIA_NOT_VERIFIED_EPISODE. No actual episode was decoded
+or played. The shared sample evidence is not ten independent CDN fetches.
+
+Native metadata itself says duration 23 and size 824720. Resource metadata instead advertises
+3345 seconds for S1E1 and 3276 seconds for S1E2, while resource URLs resolve to the identical
+22.708-second asset and size 824720. Thus catalog duration, hasResource, code 0, stream/resource
+IDs, format MP4 and HTTP success cannot establish that the delivered content is the episode.
+The initial URL blacklist did not recognize this asset (`known_notice=false`); the duration
+check correctly rejected it. No URL, cookie, bearer, key or media bytes were included in the
+owner's export or this fixture.
+
+### What is established and what remains unknown
+
+- The initial subject is the server's original Reacher entry; Indonesian is explicitly linked.
+  There is no evidence for a title/episode offset fix or alternate proven English subject.
+- The tested H5 contexts previously yielded no media and mobile detailUrl remains empty.
+- The tested native/resource path returns a shared short replacement instead of episode media
+  under the diagnostic's existing provider catalog guest profile. **It is not a viable recovery
+  source and will not be re-enabled.** The result rules out the proposed native/resource
+  adapter for these observed responses; it does not rule out every authorized official session.
+- This is consistent with a notice asset, but its visual/audio message was not captured. Calling
+  it specifically App Upgrade Notice, paywall, region block, bad signature or expired session
+  would go beyond the evidence. HTTP/code succeeded; the precise substitution trigger is UNKNOWN.
+- The diagnostic profile is explicitly not official APK 50020133 runtime parity. It cannot prove
+  what a current unmodified official application sends or plays. The supplied Mod's loader/hook
+  is not a contract to copy. No identity borrowing, entitlement/region bypass or security change
+  is introduced to force a different result.
+
+No further identical probe or broad host/episode scan is justified. The remaining useful device
+evidence is whether a current **unmodified official app** actually plays this exact Reacher S1E1
+beyond the initial loading/notice, and the Share/detail URL of that selected edition. If it plays,
+request-profile/resource-context comparison requires a service-provided permitted diagnostic
+export or sanitized logs from an authorized debug environment; a screen recording alone cannot
+reveal HTTPS headers. Do not send tokens, cookies, signed video URLs or raw private traffic.
+If it shows a short message, its exact text/screenshots can identify the service's stated reason.
+
+Production playback recovery remains BLOCKED; no speculative provider patch or new kit is
+shipped. Only sanitized evidence, its regression tests and the identity matrix/audit change.
+Plugin version remains 15; packaged Kotlin, H5 sources, audio whitelist, subtitles and all other
+providers remain byte-for-byte unchanged. This is an investigation result, not a playback fix.

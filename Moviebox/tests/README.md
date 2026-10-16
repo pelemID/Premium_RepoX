@@ -160,3 +160,7 @@ No production playback or audio/subtitle behavior is changed by that follow-up.
 Phone follow-up: server original/Indonesian mapping is now proved. See the audit follow-up
 and diagnostic V3 for the new HTTP 200/native candidates, APK JSON field correction,
 and bounded media validation. V2 resource zeros are not evidence of absent episodes.
+
+V3 phone result: all ten tested native/resource candidate contexts share one 824,720-byte,
+22.708-second MP4. The media check rejected it; no native/resource production adapter is added.
+See the audit's V3 follow-up and real sanitized fixture. Metadata availability is not playback.
