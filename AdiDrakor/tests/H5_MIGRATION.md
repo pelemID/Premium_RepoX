@@ -16,17 +16,34 @@ copied. Existing TMDB catalogs, metadata, episode stills and indices remain in
 the original providers. The optional alternative-title payload is additive;
 legacy LinkData and XtreamLinkData remain readable.
 
-Mapping requires a nonempty exact normalized title alias, matching release year
-and explicit movie/TV kind. It gathers candidates using up to four distinct
-TMDB titles (main/original/prioritized aliases first) through the reference
-search/v2 endpoint, then rejects distinct ambiguous subject IDs. It rechecks
-same-ID detail metadata and the exact server season/maxEp before TV playback.
-Movie requests use 0/0. It never converts a missing requested season to season 1.
-Unknown years, renamed/split editions, absent metadata, unsupported numbering,
-search failures and unavailable episodes fail closed with MAPPING diagnostics.
-There is no fuzzy-title or alternate-provider fallback. Search uses the same
-first-page, ten-result contract as the reference; matching across all server
-editions/pages is not claimed.
+Mapping uses exact normalized title aliases, release year and explicit movie/TV
+kind from authoritative same-ID detail, rather than rejecting sparse search rows.
+It gathers up to four title queries (twenty native results per query) and merges
+Moviebox's public server-rendered catalog discovery. A failed optional alias does
+not discard validated candidates from another query. The public catalog fallback
+also works when the mobile session is unavailable; it is Moviebox metadata, never
+an alternate media engine. Only inert `__NUXT_DATA__` JSON references are decoded;
+no scripts are executed, no browser cookies or credentials are copied.
+
+Ambiguous subject IDs collapse only when the server explicitly declares their
+membership in the same `dubs` family, marks exactly one original, and that original
+passes independent title/year/type verification. Unrelated same-title identities
+remain ambiguous. Native metadata is enriched with a same-ID public detailPath
+and declared dubs, then passed as request-local H5 metadata. No title-specific
+subject IDs or slugs are hardcoded. The playback flow differs from the reference
+only by this verified metadata context bridge; its transport/auth/audio/validation
+behavior and standalone Moviebox production source stay unchanged.
+
+TV display suffixes such as S1-S3 may identify the series only when the requested
+season is inside that range; exact season/maxEp server checks still apply. Movies
+use 0/0. Seasons and episodes are never renumbered. Unknown detail years/types,
+unrelated editions and unsupported season numbering still fail closed.
+
+Observed Insidious evidence: TMDB 1291595 has release date 2026-08-19; the public
+Moviebox page declares subject 8252531803681080504, release date 2026-08-21,
+path `insidious-out-of-the-further-06560hmGCP9`, and seven dub IDs plus the marked
+original. Sanitized metadata and a minimal equivalent Nuxt reference table are in
+`fixtures/insidious-public-*`. These are catalog observations, not live media proof.
 
 Every API request is bounded; cancellation propagates. Mapping plus playback
 has a 150-second overall budget. Media transport keeps the reference connect,
@@ -37,6 +54,8 @@ URLs are written to diagnostics.
 
 ```sh
 python3 AdiDrakor/tests/run_migration.py
+# Optional live probe, separate from fixture/device proof:
+python3 AdiDrakor/tests/probe_insidious_catalog.py
 python3 -m unittest discover -s Moviebox/tests/diagnostics -p 'test_*.py'
 ./gradlew :AdiDrakor:assembleRelease :AdiFilmSemi:assembleRelease :AdiXtream:assembleRelease :Adicinemax21:assembleRelease
 ./gradlew makePluginsJson

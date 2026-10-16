@@ -431,7 +431,8 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
+        metadataContext: Map<String,JSONObject> = emptyMap()
     ): Boolean {
         val selected = AppUtils.tryParseJson<EpData>(data) ?: return false
         if (!selected.subjectId.matches(Regex("[0-9]+")) || selected.se < 0 || selected.ep < 0) return false
@@ -466,6 +467,7 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
                     put("Authorization", "Bearer $modernBearer")
             }
         suspend fun metadata(subject: String): JSONObject? {
+            metadataContext[subject]?.takeIf { Adicinemax21MovieboxPlayback.text(it,"subjectId")==subject }?.let { return it }
             val url = "$api/wefeed-mobile-bff/subject-api/get?subjectId=$subject"
             var response = playbackRequest(url,modernPlaybackHeaders(url,modernBearer))
             if (response?.first in listOf(401,441)) {
@@ -644,37 +646,82 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
                     Log.d(TAG,"[MAPPING] INSUFFICIENT_TMDB_IDENTITY")
                     return@withTimeoutOrNull false
                 }
-                val bearer = getBearerToken() ?: run {
-                    Log.d(TAG,"[MAPPING] AUTH_UNAVAILABLE")
-                    return@withTimeoutOrNull false
-                }
+                val bearer=try { getBearerToken() } catch(e: CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                // Public Moviebox catalog discovery needs no mobile session. Playback remains H5.
+                val catalog="https://moviebox.ph"
+                val catalogRows=linkedMapOf<String,JSONObject>()
+                val webHeaders=mapOf("User-Agent" to Adicinemax21MovieboxPlayback.WEB_UA,"Referer" to "$catalog/")
+                suspend fun page(url: String): String? = playbackRequest(url,webHeaders)
+                    ?.takeIf { it.first==200 }?.second
                 suspend fun read(id: String, endpoint: String): String? {
-                    val ts = System.currentTimeMillis().toString()
-                    val path = "/wefeed-mobile-bff/subject-api/$endpoint?subjectId=$id"
-                    return playbackRequest("$mainUrl$path",headersFor(ts,generateSignature("GET",path,ts),bearer))
-                        ?.takeIf { it.first == 200 }?.second
+                    var mobile: String?=null
+                    if(bearer!=null) {
+                        val ts=System.currentTimeMillis().toString()
+                        val path="/wefeed-mobile-bff/subject-api/$endpoint?subjectId=$id"
+                        mobile=playbackRequest("$mainUrl$path",headersFor(ts,generateSignature("GET",path,ts),bearer))
+                            ?.takeIf { it.first==200 }?.second
+                        if(endpoint!="get" && mobile!=null) return mobile
+                    }
+                    if(endpoint!="get") return null
+                    val row=catalogRows[id] ?: return mobile
+                    val path=Adicinemax21MovieboxPlayback.detailPath(row,id)
+                    if(!path.matches(Regex("[A-Za-z0-9_-]{1,220}"))) return mobile
+                    val html=page("$catalog/moviedetail/$path?id=$id&type=/movie/detail") ?: return mobile
+                    val meta=Adicinemax21MovieboxMapping.catalogPage(html).firstOrNull { Adicinemax21MovieboxPlayback.text(it,"subjectId")==id }
+                        ?: return mobile
+                    val identity=Adicinemax21MovieboxMapping.subject(meta)
+                    if(identity==null || !Adicinemax21MovieboxMapping.matches(request,identity)) return mobile
+                    val combined=Adicinemax21MovieboxPlayback.metadata(mobile,id)?.let { JSONObject(it.toString()) } ?: JSONObject()
+                    meta.keys().forEach { combined.put(it,meta.get(it)) }
+                    return JSONObject().put("code",0).put("data",combined).toString()
                 }
-                val match = Adicinemax21MovieboxMapping.resolve(request,
+                var publicDiscoveryAttempted=false
+                val match=Adicinemax21MovieboxMapping.resolve(request,
                     search = { title ->
-                        val body = JSONObject().put("page",1).put("perPage",10).put("keyword",title).put("tabId","").toString()
-                        postSigned("/wefeed-mobile-bff/subject-api/search/v2",body,bearer)
-                    },
-                    detail = { read(it,"get") }, seasons = { read(it,"season-info") })
-                val subject = match.subject
-                if (subject == null) {
+                        var raw: String?=null
+                        if(bearer!=null) {
+                            val body=JSONObject().put("page",1).put("perPage",20).put("keyword",title).put("tabId","").toString()
+                            raw=postSigned("/wefeed-mobile-bff/subject-api/search/v2",body,bearer)
+                        }
+                        val native=Adicinemax21MovieboxMapping.searchObjects(raw)
+                        val hasIdentity=Adicinemax21MovieboxMapping.parseSearch(raw).any { item ->
+                            (item.year==null || item.year==year) && (item.type !in 1..2 || item.type==type) &&
+                                titles.any { Adicinemax21MovieboxMapping.normalize(it)==Adicinemax21MovieboxMapping.normalize(item.title) }
+                        }
+                        // Discover H5 paths even when native search succeeds: native detail can
+                        // omit the web context that the standalone provider obtains later.
+                        if(!publicDiscoveryAttempted || !hasIdentity) {
+                            val html=page("$catalog/web/searchResult?keyword=${URLEncoder.encode(title,"UTF-8")}")
+                            if(html!=null) {
+                                val rows=Adicinemax21MovieboxMapping.catalogPage(html)
+                                if(rows.isNotEmpty()) {
+                                    publicDiscoveryAttempted=true
+                                    rows.forEach { catalogRows[Adicinemax21MovieboxPlayback.text(it,"subjectId")]=it }
+                                    raw=JSONObject().put("code",0).put("data",JSONObject().put("items",
+                                        org.json.JSONArray(native+rows))).toString()
+                                }
+                            }
+                        }
+                        raw
+                    }, detail = { read(it,"get") }, seasons = { read(it,"season-info") })
+                val subject=match.subject
+                if(subject==null) {
                     Log.d(TAG,"[MAPPING] ${match.reason} type=$type se=$season ep=$episode")
                     return@withTimeoutOrNull false
                 }
-                val selected = EpData(subject.id,if (type == 1) 0 else season!!,
-                    if (type == 1) 0 else episode!!,type)
-                loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback)
+                Log.d(TAG,"[MAPPING] verified subject=${subject.id} type=$type year=${subject.year} detailPath=${match.metadata?.has("detailPath")==true}")
+                val selected=EpData(subject.id,if(type==1) 0 else season!!,if(type==1) 0 else episode!!,type)
+                val context=match.metadata?.takeIf { Adicinemax21MovieboxPlayback.detailPath(it,subject.id).isNotBlank() }
+                    ?.let { mapOf(subject.id to it) }.orEmpty()
+                loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback,context)
             } catch(e: CancellationException) { throw e
             } catch(e: Exception) {
                 Log.d(TAG,"[MAPPING] ${e.javaClass.simpleName}")
                 false
             }
         }
-        if (completed == null) Log.d(TAG,"[MAPPING] TIMEOUT")
+        if(completed==null) Log.d(TAG,"[MAPPING] TIMEOUT")
         return completed ?: false
     }
 

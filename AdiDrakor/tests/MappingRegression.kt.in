@@ -47,6 +47,12 @@ fun main() = runBlocking {
     test("similar title is not an exact alias") {
         check(MATCHER.choose(r,listOf(movie.copy(title="Example Returns"))).subject == null)
     }
+    test("Moviebox TV season-range suffix is display metadata only") {
+        val tv=r.copy(type=2,season=2,episode=4)
+        check(MATCHER.matches(tv,movie.copy(type=2,title="Example S1-S3")))
+        check(!MATCHER.matches(tv,movie.copy(type=2,title="Example S3-S4")))
+        check(!MATCHER.matches(r,movie.copy(title="Example S1-S3")))
+    }
     test("subject not found") { check(MATCHER.choose(r,emptyList()).subject == null) }
     test("season and episode must exist exactly") {
         check(MATCHER.episode(seasons,"123",1,1))
@@ -90,6 +96,58 @@ fun main() = runBlocking {
         check(!MATCHER.valid(r.copy(type=2,season=1,episode=0)))
     }
 
+    val fixture=JSONObject(java.io.File(System.getProperty("migration.fixtures"),"insidious-public-detail.json").readText())
+    val insidious=fixture.getJSONObject("data")
+    val insidiousRequest=MATCHER.Request(listOf("Insidious: Out of the Further"),2026,1,null,null)
+    val originalId=insidious.getString("subjectId")
+    val dubId=insidious.getJSONArray("dubs").getJSONObject(1).getString("subjectId")
+    val original= MATCHER.subject(insidious)!!
+    fun catalog(vararg items: JSONObject)=JSONObject().put("code",0).put("data",JSONObject()
+        .put("results",org.json.JSONArray().put(JSONObject().put("subjects",org.json.JSONArray(items.toList()))))).toString()
+    fun envelope(item: JSONObject)=JSONObject().put("code",0).put("data",item).toString()
+    test("observed Insidious public metadata decodes original plus seven explicit dubs") {
+        val html=java.io.File(System.getProperty("migration.fixtures"),"insidious-public-nuxt.html").readText()
+        val parsed=MATCHER.catalogPage(html).single()
+        check(parsed.getString("subjectId")==originalId)
+        check(parsed.getString("detailPath")=="insidious-out-of-the-further-06560hmGCP9")
+        check(parsed.getJSONArray("dubs").length()==8)
+        check(MATCHER.parseSearch(MATCHER.catalogSearch(html)).single()==original)
+        check(MATCHER.catalogPage("<html>error</html>").isEmpty())
+    }
+    test("Insidious sparse mobile search verifies year and kind from same-ID detail") {
+        val sparse=JSONObject().put("subjectId",originalId).put("title",original.title)
+        check(MATCHER.resolve(insidiousRequest,{catalog(sparse)},{envelope(insidious)},{error("movie season")}).subject==original)
+    }
+    test("same film dub subjects collapse only to server-declared original") {
+        val dub=JSONObject(insidious.toString()).put("subjectId",dubId)
+        val result=MATCHER.resolve(insidiousRequest,{catalog(insidious,dub)},
+            { envelope(if(it==originalId) insidious else dub) },{null})
+        check(result.subject==original && result.metadata?.getString("detailPath")==insidious.getString("detailPath"))
+    }
+    test("dub-only search resolves declared original through separately verified detail") {
+        val dub=JSONObject(insidious.toString()).put("subjectId",dubId)
+        check(MATCHER.resolve(insidiousRequest,{catalog(dub)},
+            { envelope(if(it==originalId) insidious else dub) },{null}).subject==original)
+    }
+    test("unrelated same-title subjects remain ambiguous despite explicit original family") {
+        val separate=JSONObject(insidious.toString()).put("subjectId","999").apply { remove("dubs") }
+        check(MATCHER.resolve(insidiousRequest,{catalog(insidious,separate)},
+            { envelope(if(it==originalId) insidious else separate) },{null}).reason=="AMBIGUOUS_SUBJECT")
+    }
+    test("failed optional alias does not discard a verified main-title match") {
+        val req=insidiousRequest.copy(titles=insidiousRequest.titles+"Unavailable Alias")
+        check(MATCHER.resolve(req,{if(it=="Unavailable Alias") null else catalog(insidious)},
+            {envelope(insidious)},{null}).subject==original)
+    }
+    test("detail year mismatch is never cured by sparse search or dub relation") {
+        val wrong=JSONObject(insidious.toString()).put("releaseDate","2025-01-01")
+        check(MATCHER.resolve(insidiousRequest,{catalog(insidious)},{envelope(wrong)},{null}).subject==null)
+    }
+    test("invalid Nuxt reference graph and script text are never executed") {
+        check(MATCHER.catalogPage("<script id=__NUXT_DATA__ type=application/json>[{\"subjectId\":0,\"title\":0}]</script>").isEmpty())
+        check(MATCHER.catalogPage("<script>throw new Error('no')</script>").isEmpty())
+    }
+
     val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
     server.createContext("/") { ex ->
         val bytes=byteArrayOf(0,0,0,24)+"ftypisom".toByteArray()+ByteArray(128)
@@ -127,6 +185,30 @@ fun main() = runBlocking {
     try {
         test("registered MainAPI movie maps to H5 0/0 and local media validates") { throughRegisteredProvider(false) }
         test("registered MainAPI series maps exact 2/4 and owns link source") { throughRegisteredProvider(true) }
+        test("Insidious MainAPI survives failed mobile auth using verified public H5 context") {
+            val html=java.io.File(System.getProperty("migration.fixtures"),"insidious-public-nuxt.html").readText()
+            PlaybackApiFixture.requests.clear()
+            PlaybackApiFixture.responder={ req ->
+                when {
+                    req.url.host=="moviebox.ph" -> {
+                        check(req.header("Authorization")==null)
+                        response(req,html)
+                    }
+                    req.url.encodedPath.endsWith("subject/play") -> {
+                        check(req.url.queryParameter("subjectId")==originalId)
+                        check(req.url.queryParameter("detailPath")==insidious.getString("detailPath"))
+                        response(req,"""{"code":0,"data":{"subjectId":"$originalId","se":0,"ep":0,"streams":[{"id":"s1","url":"$media"}]}}""")
+                    }
+                    else -> response(req,"{\"code\":403}").newBuilder().code(403).build()
+                }
+            }
+            val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
+            val payload="""{"id":1291595,"tmdbId":"1291595","title":"Insidious: Out of the Further","year":2026,"type":"movie","isTvSeries":false}"""
+            check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
+            check(links.single().source=="PROVIDER")
+            check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
+        }
+
     } finally {
         server.stop(0)
         com.lagradost.cloudstream3.app.baseClient.connectionPool.evictAll()
