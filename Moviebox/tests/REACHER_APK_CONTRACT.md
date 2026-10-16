@@ -1,0 +1,134 @@
+# Reacher: APK contract audit and unresolved identity (2026-10-16)
+
+Baseline main: `9d33848994275635a0e12acf0d81253f4fe927be`, plugin 15.
+Scope: investigation and a separate diagnostic kit. **No production Kotlin, plugin version,
+audio whitelist, media headers/validator, subtitle, H5 domains or other provider is changed.**
+No Reacher playback recovery is claimed.
+
+## Artifacts and evidence limits
+
+- New APK SHA-256: `40f6cad43ef3c80de2a50fb82351f6b810d36f0555ed15a5e9ee4c11305cb0cb`.
+  Binary manifest: `com.community.oneroom`, `4.0.03.0930.04`, code `50020133`, eight DEX files.
+  Androguard 4.1.4 confirms application `Abdullah.hook`, JAR signer subject `CN=IN`, v2/v3
+  signatures present. The certificate name does not establish the app's origin or safety.
+- JADX 1.5.3 and DEX instruction disassembly were used. The DEX class index contains 61,991
+  definitions. Some network/bootstrap/activity methods have invalid/protected instruction
+  payloads and could not be reliably decompiled; readable DTOs and the concrete coroutine
+  methods below were inspected. This is not a claim that every APK method was recovered.
+- `Abdullah.hook` extends the application and intercepts PackageManager/signing information;
+  its signer helper supplies replacement signature data. **No hook, signature-spoofing logic,
+  modified entitlement handling or installer impersonation is copied into the provider/kit.**
+  APK was not installed or executed; no personal account/session was used. Findings are
+  explicitly about the supplied Mod artifact, not verified official runtime behavior.
+- Earlier official APK: `4.0.03.0922.03` / `50020131`, SHA-256
+  `d219ac4d31c33c865bffdc9ebdcf26798ca3f508fd33fcb5858b9904c5cc8364`. It exposes four shell
+  classes and protected payload. It cannot verify that each readable Mod business method
+  is identical to an official build. Previous audit remains in `tests/README.md`.
+- `585232.mp4`: duration 214.96 seconds. Around 176 seconds, search shows separate entries
+  `Reacher [Indonesian] S1-…`, `Reacher S1-S4`, and `Reacher` with different artwork.
+  Around 179 seconds the Indonesian detail displays year 2022, Season 1, eight episodes,
+  followed by loading. No subject/resource ID, API response or successful Reacher playback
+  is visible. Title/artwork similarity is not used to link the third entry to Reacher (2022).
+
+## Recovered call chains (static, not a Reacher runtime trace)
+
+| Stage | Concrete code location | Verified behavior |
+| --- | --- | --- |
+| Detail season preload | `moviedetail.preload.MovieDetailResourcesSeasonLoader.h` → `$loadDataFromService$1.AnonymousClass1.invokeSuspend` | Calls `qy.a.c(vg.a.a(), loader.subjectId, continuation)`; only code `0` emits `ResourcesSeasonList`, otherwise null. No episode offset or alternate ID is synthesized. |
+| Dubbing metadata | `downloader.viewmodel.DownloadResourcesDetectorViewModel.t(subjectId)` → `$getResourceAllLangInfo$1.AnonymousClass1.invokeSuspend` | Calls `qy.a.b(host, subjectId, continuation)`; code `0` emits `DubsInfoData` to the audio/resource LiveData. This is a resource/download UI path, not proof that every native playback first calls dub-info. |
+| Dub identity | `moviedetailapi.bean.DubsInfo`, `DubsInfoData`; `downloader.widget.DownloadResolutionTabView.setAudioItemClickListener` | `subjectId`, `lanName`, `lanCode`, `original`; transient UI flags `isSelected`, `isSubtitle`; list `dubs`. A caller can select a server-declared audio subject. Exact Reacher IDs are server data, not constants in these DTOs. The protected upstream detail/UI path cannot establish a particular Reacher mapping. |
+| Resource preload | `MovieDetailDownloadListLoader$loadDataFromService$1.AnonymousClass1.invokeSuspend` | Invokes `qy.a.g` through default-argument helper with page `1`, perPage `10`, resolution `0`; mask `3824` supplies all `0`, start/end `1/1`, pagerMode `0`, se `1`, epFrom/epTo `1/1`. A preload is not proof of media availability. |
+| Selected resource query | `DownloadResourcesDetectorViewModel.j` → `$getDownloadList$1.AnonymousClass1.invokeSuspend` | Carries the selected subject, se, epFrom/epTo, page, positions and resolution to the same resource API. Does not justify treating all returned download URLs as streams. |
+| Episode identity | `videodetail.VideoDetailViewModel$fetchEpisodeMediaList$1` and `VideoDetailMediaSource` | Movie uses `0/0`. Serial uses returned `ResourcesSeason.se`; nonempty `allEp` is comma-separated exact indices. When empty, episode indices are generated from `1..maxEp`. Those are declarations, not a successful media check. No Reacher-specific season shift was found. |
+| Native player request | `VideoDetailViewModel.v(mediaSource)` → `$getPlayInfo$2.invokeSuspend` → `videodetail.b.b` | Cache key is exact `subjectId-se-ep`. GET play-info takes exactly subjectId/se/ep plus dynamic host. No detailPath, codec flags or H5 request occurs in this native method. Local authorized downloads are a distinct branch using `DownloadBean.path`, not an API media fallback to copy blindly. |
+| Response → player | `videodetail.bean.VideoDetailStreamList`, `VideoDetailStream`; `videodetail.util.StreamFloatManager.o` | Uses `streams`, selects by format/resolution, carries nonempty `signCookie` as Cookie, builds media data source from the returned URL, then setDataSource/prepare/play. Format mapping explicitly separates DASH, HLS and DEFAULT. This shared path is not evidence it ran for Reacher. |
+| External play URL | `Subject.isJumpBrowser/isJumpWebview`, `PlayUrl`, `PlayUrlType`, `DownloadPanelForYouFootView` | `PLAY_URL_WEB` opens a browser; `PLAY_URL_ANDROID` opens an app webview, with family-mode gating. These enum values are navigation types, not H5-vs-mobile media format selectors. No such URL was recovered for Reacher. |
+
+`ResourceDetectors`: type `1` means collection; type `0` with nonempty resolutionList means
+multi-resolution; type `0` with empty/null resolutionList means single resource. Fields include
+resourceLink/downloadUrl/resourceId/postId/extSubtitle. `DownloadItem` separately carries
+resourceId, se, ep, linkType, url and resolution. Neither model alone proves playback identity.
+
+## Retrofit contracts actually inspected
+
+`qy.a` (classes8.dex):
+
+| GET path under `/wefeed-mobile-bff/subject-api/` | Annotated parameters | Response |
+| --- | --- | --- |
+| `get` | host, subjectId | BaseDto&lt;Subject&gt; |
+| `dub-info` | host, subjectId | BaseDto&lt;DubsInfoData&gt; |
+| `season-info` | host, subjectId | BaseDto&lt;ResourcesSeasonList&gt; |
+| `resource` | host, subjectId, page, perPage, all, startPosition, endPosition, pagerMode, resolution, se, epFrom, epTo | BaseDto&lt;DownloadListBean&gt; |
+| `resource-position` | host, subjectId, resourceId, failUrl, failCode, resourceNum | BaseDto&lt;DownloadListBean&gt; |
+
+`videodetail.b` (classes7.dex) independently declares `play-info(subjectId,se,ep,host)` and
+`season-info(subjectId,host)`. The coroutine bytecode was checked for the season loader's
+exact subject propagation (`qy.a.c`), beyond searching endpoint strings.
+
+Dynamic `host` originates in `vg.a.a()` → `CacheIpPool.g()`. The latter and portions of the
+network/interceptor layer are protected/invalid in static decoding. Therefore final wire host,
+header/session transformations and official runtime parity remain UNKNOWN; the `host` argument
+is not speculatively copied as a CDN selector or a server query override.
+No H5 `detailPath` can be reconstructed from the native play-info method, which does not use it.
+
+## Reacher identity matrix before any proposed production edit
+
+The complete matrix is [diagnostics/reacher_identity_matrix.csv](diagnostics/reacher_identity_matrix.csv).
+UNKNOWN means there is no server/runtime evidence. The seed ID is supplied by the provider
+URL; it has not been proven to be the original member of a dub family.
+
+| Entry | Known ID | Season/episode | Linkage/resource evidence |
+| --- | --- | --- | --- |
+| Initial provider Reacher (2022) | 3620534210064175096 | S1E1, comparison S1E2 | New dub-info and season-info denied with 403; original/dub IDs, actual path and media unknown. |
+| Reacher [Indonesian] (2022), video detail | UNKNOWN | S1 has eight displayed episodes | UI label is not an explicit dub-info relationship or a playable resource. |
+| Reacher S1-S4, video search entry | UNKNOWN | UNKNOWN | Compilation/season relationship unproven. |
+| Third Reacher search entry | UNKNOWN | UNKNOWN | Different artwork; not equated with the target. |
+| English audio member | UNKNOWN | S1E1 requested target | No server-declared mapping recovered. |
+
+## New HTTP evidence; old failing H5 probes were not repeated
+
+Hypothesis tested: dedicated dub-info/season metadata may expose a mapped Reacher subject
+that the current inline-dubs H5 resolver never sees. Using the existing provider modern
+signature/profile, exact ID `3620534210064175096`:
+
+- GET `dub-info?subjectId=…`: HTTP 403 / code 403, `Service not available in current region`.
+- GET `season-info?subjectId=…`: same explicit regional denial.
+- No host/region/proxy/restriction workaround was attempted. With metadata access denied,
+  resource/media availability cannot be inferred. A native play-info retry was not justified.
+- Kit smoke test used the existing catalog guest profile on api3: bootstrap also returned
+  HTTP/code 403. Kit created its sanitized ZIP and stopped, without probing other hosts.
+
+Real sanitized responses are in [diagnostics/observed_metadata_denials.json](diagnostics/observed_metadata_denials.json).
+Previous seven-alias empty H5 and H5 TARGET_NOT_FOUND observations are preserved in the
+baseline README; no identical seven-host scan was rerun. Region denial proves this request
+cannot access metadata here; it does not prove that Reacher resources do not exist elsewhere.
+
+## Cause classification and implementation decision
+
+A (identity), B (path), C (episode mapping): UNKNOWN for this Reacher ID. Generic APK code
+retains exact episode indices and supplies no alternative ID/path. D (separate dubbing API):
+its existence and consumer are proved statically, but the Reacher response is blocked, so
+its omission is not established as Reacher's root cause. E (different media path): native and
+external-navigation paths exist, but no valid Reacher resource from either was obtained.
+F (no resource for a legitimate session): UNKNOWN; session metadata is denied in this environment.
+
+**Root cause remains UNRESOLVED. FIX_IMPLEMENTED: NO production playback patch.**
+Only the audit and a tested, separate diagnostic kit are added. No speculative adapter,
+hardcoded alternative subject, episode substitution, notice, validator relaxation or source
+reactivation is shipped. Build/plugin version stays 15 because packaged source is unchanged.
+
+## Next evidence and validation
+
+Use [diagnostics/README.md](diagnostics/README.md) and the kit on the user's own connection.
+Needed: exact Share/detail links for original/Indonesian/S1-S4 entries; server dub-info mapping;
+season metadata and resource item IDs for the exact selected S1E1; comparison S1E2 when declared;
+and sanitized plugin logs showing metadata path/endpoint status and validated candidate counts
+for Reacher and one working control. The kit never claims other-app HTTPS capture. If the
+official app has a permitted diagnostic export, only sanitized identity/status/schema data is
+needed, not credentials, raw traffic, signed URLs or a bypass of TLS pinning.
+
+Baseline 29 schema/media + 20 provider/local HTTP tests and real CloudStream API production
+compilation: PASS. 13 diagnostic tests: PASS, covering privacy, real denial fixtures, subject/dub relationships,
+exact episode/resource association, bounded denial handling, and source hash integrity.
+These synthetic tests and successful kit execution are not Reacher playback/device tests.
+Android/official-app runtime capture and live Reacher media validation remain unavailable.

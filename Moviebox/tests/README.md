@@ -150,3 +150,9 @@ The synthetic Reacher tests exercise failure safety, not a claimed fix or live p
 Logs now distinguish unavailable detailPath and parsed/audio-filtered/validated counts without
 logging response bodies, signed URLs, credentials or cookies. A supported official-app runtime
 capture remains necessary to compare the hidden business request contract accurately.
+
+## Follow-up APK 50020133 / Reacher-only audit
+
+See [REACHER_APK_CONTRACT.md](REACHER_APK_CONTRACT.md) for recovered call chains,
+identity matrix, new endpoint denials and the separate no-root diagnostic kit.
+No production playback or audio/subtitle behavior is changed by that follow-up.
