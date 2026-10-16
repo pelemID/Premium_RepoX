@@ -1,0 +1,63 @@
+# Four independent Moviebox H5 playback ports
+
+Reference: Moviebox at `4a4d272f96424a8ab340b8a63a3a44d63d69d0b8`.
+
+Each target module owns `*MovieboxEngine`, `*MovieboxPlayback`, and
+`*MovieboxMapping` in its own package. Plugin registration attaches only that
+module's context and registers the original TMDB MainAPI. Context/identity
+preferences and in-memory sessions are separate. No production source is
+included from another provider.
+
+The H5 flow, scoped media interceptor, stream schemas/validation, audio filtering,
+captions, signed-policy handling and verified Reacher/House of the Dragon paths
+are ported without behavior changes. Unreachable old mobile playback profiles,
+Moviebox catalog UI, plugin registration and episode display enrichment are not
+copied. Existing TMDB catalogs, metadata, episode stills and indices remain in
+the original providers. The optional alternative-title payload is additive;
+legacy LinkData and XtreamLinkData remain readable.
+
+Mapping requires a nonempty exact normalized title alias, matching release year
+and explicit movie/TV kind. It gathers candidates using up to four distinct
+TMDB titles (main/original/prioritized aliases first) through the reference
+search/v2 endpoint, then rejects distinct ambiguous subject IDs. It rechecks
+same-ID detail metadata and the exact server season/maxEp before TV playback.
+Movie requests use 0/0. It never converts a missing requested season to season 1.
+Unknown years, renamed/split editions, absent metadata, unsupported numbering,
+search failures and unavailable episodes fail closed with MAPPING diagnostics.
+There is no fuzzy-title or alternate-provider fallback. Search uses the same
+first-page, ten-result contract as the reference; matching across all server
+editions/pages is not claimed.
+
+Every API request is bounded; cancellation propagates. Mapping plus playback
+has a 150-second overall budget. Media transport keeps the reference connect,
+read and call limits. No credentials, response bodies or complete signed media
+URLs are written to diagnostics.
+
+## Verification
+
+```sh
+python3 AdiDrakor/tests/run_migration.py
+python3 -m unittest discover -s Moviebox/tests/diagnostics -p 'test_*.py'
+./gradlew :AdiDrakor:assembleRelease :AdiFilmSemi:assembleRelease :AdiXtream:assembleRelease :Adicinemax21:assembleRelease
+./gradlew makePluginsJson
+python3 AdiDrakor/tests/verify_artifacts.py /path/to/distribution /path/to/previous/plugins.json
+```
+
+The runner first executes the unchanged Moviebox regression suite. It then
+compiles each production module separately against the actual CloudStream SDK,
+checks byte parity of the H5 flow/interceptor and playback helper, and replays
+the original playback regression/integration fixtures against every local port.
+Additional mapping tests cover identity, ambiguity, missing seasons, cancellation,
+timeout and the actual target MainAPI-to-H5 path using a local HTTP media server.
+Test sources/dependencies are never packaged into the plugins.
+
+Fixture success does not prove live service or Android playback. In this
+execution environment the real Moviebox authentication request returned HTTP 403
+with `Service not available in current region`; no geographic workaround was
+used. Device playback, Android UI and buffering require device verification.
+
+The distribution workflow verifies all previously listed plugin identities are
+retained and checks the four target manifests plus standalone Moviebox, DEX,
+versions, byte sizes and SHA-256 hashes before publication. It requires the
+existing builds branch and performs a normal append-only push, never an orphan
+branch recreation or force push. The root Gradle configuration is unchanged.

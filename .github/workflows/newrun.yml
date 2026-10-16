@@ -34,22 +34,13 @@ jobs:
         with:
           path: "builds"
 
-      - name: Siapkan branch builds (buat ulang kalau terhapus)
+      - name: Checkout existing builds branch
         run: |
           cd "$GITHUB_WORKSPACE/builds"
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
-
-          if git ls-remote --exit-code --heads origin builds >/dev/null 2>&1; then
-            echo ">> Branch 'builds' ditemukan, checkout..."
-            git fetch origin builds:builds
-            git checkout builds
-          else
-            echo ">> Branch 'builds' TIDAK ADA. Membuat ulang sebagai orphan branch..."
-            git checkout --orphan builds
-            git rm -rf . >/dev/null 2>&1 || true
-            find . -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
-          fi
+          git ls-remote --exit-code --heads origin builds >/dev/null
+          git fetch origin builds
+          git checkout --detach FETCH_HEAD
+          cp plugins.json "$RUNNER_TEMP/plugins-before.json"
 
       - name: Bersihkan build lama
         run: |
@@ -72,15 +63,26 @@ jobs:
           cd "$GITHUB_WORKSPACE/src"
           touch local.properties
 
+      - name: Verify isolated H5 ports and original Moviebox regression
+        run: |
+          cd "$GITHUB_WORKSPACE/src"
+          python3 AdiDrakor/tests/run_migration.py
+
       - name: Build Plugins
         run: |
           cd "$GITHUB_WORKSPACE/src"
           chmod +x gradlew
+          ./gradlew :AdiDrakor:assembleRelease :AdiFilmSemi:assembleRelease :AdiXtream:assembleRelease :Adicinemax21:assembleRelease
           ./gradlew makePluginsJson
           shopt -s globstar nullglob
           cp **/build/*.cs3 "$GITHUB_WORKSPACE/builds" || true
           cp **/build/*.jar "$GITHUB_WORKSPACE/builds" || true
           cp build/plugins.json "$GITHUB_WORKSPACE/builds"
+
+      - name: Verify plugin artifacts and catalog preservation
+        run: |
+          cd "$GITHUB_WORKSPACE/src"
+          python3 AdiDrakor/tests/verify_artifacts.py "$GITHUB_WORKSPACE/builds" "$RUNNER_TEMP/plugins-before.json"
 
       - name: Buat ulang repo.json kalau hilang
         run: |
@@ -126,14 +128,9 @@ jobs:
           git config --local user.name "GitHub Actions"
           git add -A
 
-          if git rev-parse --verify HEAD >/dev/null 2>&1; then
-            if git diff --cached --quiet; then
-              echo ">> Tidak ada perubahan, skip push."
-              exit 0
-            fi
-            git commit --amend -m "Build $GITHUB_SHA"
-          else
-            git commit -m "Build $GITHUB_SHA"
+          if git diff --cached --quiet; then
+            echo ">> Tidak ada perubahan, skip push."
+            exit 0
           fi
-
-          git push --force origin builds
+          git commit -m "Build $GITHUB_SHA"
+          git push origin HEAD:refs/heads/builds

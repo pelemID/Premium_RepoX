@@ -1,8 +1,6 @@
 package com.michat88
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.michat88.AdiFilmSemiExtractor.invokeMoviebox
-import com.michat88.AdiFilmSemiIdlix.invokeIdlix
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.metaproviders.TmdbProvider
@@ -216,6 +214,7 @@ open class AdiFilmSemi : TmdbProvider() {
                                 title = title,
                                 year = season.airDate?.split("-")?.first()?.toIntOrNull(),
                                 orgTitle = orgTitle,
+                                alternativeTitles = (res.alternativeTitles?.results.orEmpty() + res.alternativeTitles?.titles.orEmpty()).mapNotNull { it.title }.distinct(),
                                 isAnime = isAnime,
                                 airedYear = year,
                                 lastSeason = lastSeason,
@@ -274,6 +273,7 @@ open class AdiFilmSemi : TmdbProvider() {
                     title = title,
                     year = year,
                     orgTitle = orgTitle,
+                    alternativeTitles = (res.alternativeTitles?.results.orEmpty() + res.alternativeTitles?.titles.orEmpty()).mapNotNull { it.title }.distinct(),
                     isAnime = isAnime,
                     jpTitle = res.alternativeTitles?.results?.find { it.iso31661 == "JP" }?.title,
                     airedDate = res.releaseDate
@@ -300,43 +300,21 @@ open class AdiFilmSemi : TmdbProvider() {
         }
     }
 
+    private val movieboxEngine by lazy { AdiFilmSemiMovieboxEngine(name) }
+
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): okhttp3.Interceptor =
+        movieboxEngine.getVideoInterceptor(extractorLink)
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val res = parseJson<LinkData>(data)
-
-        runAllAsync(
-            {
-                invokeMoviebox(
-                    title = res.title ?: return@runAllAsync,
-                    orgTitle = res.orgTitle,
-                    altTitle = res.jpTitle,
-                    year = res.year,
-                    airedYear = res.airedYear,
-                    season = res.season,
-                    episode = res.episode,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
-            },
-            {
-                invokeIdlix(
-                    title = res.title ?: return@runAllAsync,
-                    orgTitle = res.orgTitle,
-                    altTitle = res.jpTitle,
-                    year = if (res.season != null) (res.airedYear ?: res.year) else res.year,
-                    season = res.season,
-                    episode = res.episode,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
-            }
-        )
-
-        return true
+        val item = com.lagradost.cloudstream3.utils.AppUtils.tryParseJson<LinkData>(data) ?: return false
+        return movieboxEngine.resolve(
+            listOfNotNull(item.title, item.orgTitle, item.jpTitle) + item.alternativeTitles, item.airedYear ?: item.year, when (item.type) { "movie" -> 1; "tv" -> 2; else -> return false }, item.season, item.episode,
+            subtitleCallback, callback)
     }
 
     data class LinkData(
@@ -361,6 +339,7 @@ open class AdiFilmSemi : TmdbProvider() {
         val isAsian: Boolean = false,
         val isBollywood: Boolean = false,
         val isCartoon: Boolean = false,
+        val alternativeTitles: List<String> = emptyList(),
     )
 
     data class Data(
@@ -448,6 +427,7 @@ open class AdiFilmSemi : TmdbProvider() {
 
     data class ResultsAltTitles(
         @JsonProperty("results") val results: ArrayList<AltTitles>? = arrayListOf(),
+        @param:JsonProperty("titles") val titles: List<AltTitles>? = emptyList(),
     )
 
     data class ExternalIds(

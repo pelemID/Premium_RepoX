@@ -1,8 +1,6 @@
 package com.AdiDrakor
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.AdiDrakor.AdiDrakorExtractor.invokeMoviebox
-import com.AdiDrakor.AdiDrakorIdlix.invokeIdlix
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.metaproviders.TmdbProvider
@@ -12,7 +10,6 @@ import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import okhttp3.Interceptor
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -216,6 +213,7 @@ open class AdiDrakor : TmdbProvider() {
                             title = title,
                             year = season.airDate?.split("-")?.firstOrNull()?.toIntOrNull(),
                             orgTitle = orgTitle,
+                            alternativeTitles = (res.alternativeTitles?.results.orEmpty() + res.alternativeTitles?.titles.orEmpty()).mapNotNull { it.title }.distinct(),
                             isAnime = isAnime,
                             airedYear = year,
                             lastSeason = lastSeason,
@@ -274,6 +272,7 @@ open class AdiDrakor : TmdbProvider() {
                     title = title,
                     year = year,
                     orgTitle = orgTitle,
+                    alternativeTitles = (res.alternativeTitles?.results.orEmpty() + res.alternativeTitles?.titles.orEmpty()).mapNotNull { it.title }.distinct(),
                     isAnime = isAnime,
                     jpTitle = jpTitle,
                     altTitle = idTitle,
@@ -300,63 +299,21 @@ open class AdiDrakor : TmdbProvider() {
         }
     }
 
+    private val movieboxEngine by lazy { AdiDrakorMovieboxEngine(name) }
+
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): okhttp3.Interceptor =
+        movieboxEngine.getVideoInterceptor(extractorLink)
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val res = parseJson<LinkData>(data)
-        runAllAsync(
-            {
-                invokeMoviebox(
-                    res.title ?: return@runAllAsync,
-                    res.orgTitle,
-                    res.altTitle,
-                    res.year,
-                    res.airedYear,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            },
-            {
-                invokeIdlix(
-                    res.title ?: return@runAllAsync,
-                    res.orgTitle,
-                    res.altTitle,
-                    res.year,
-                    res.season,
-                    res.episode,
-                    subtitleCallback,
-                    callback
-                )
-            }
-        )
-        return true
-    }
-
-    /**
-     * Dipindahkan dari MovieBoxProvider.
-     *
-     * Stream MovieBox memakai signed cookie; tanpa interceptor ini ExoPlayer
-     * tidak mengirim header Cookie ke CDN dan semua request balas 403.
-     *
-     * Return null bila link tidak punya header Cookie, sehingga sumber lain
-     * yang tidak memakai Cookie MovieBox tidak terpengaruh.
-     */
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        val cookie = extractorLink.headers["Cookie"]
-        if (cookie.isNullOrBlank()) return null
-        val userAgent = extractorLink.headers["User-Agent"]
-
-        return Interceptor { chain ->
-            val request = chain.request()
-            val builder = request.newBuilder().header("Cookie", cookie)
-            if (!userAgent.isNullOrBlank()) builder.header("User-Agent", userAgent)
-            chain.proceed(builder.build())
-        }
+        val item = com.lagradost.cloudstream3.utils.AppUtils.tryParseJson<LinkData>(data) ?: return false
+        return movieboxEngine.resolve(
+            listOfNotNull(item.title, item.orgTitle, item.jpTitle, item.altTitle) + item.alternativeTitles, item.airedYear ?: item.year, when (item.type) { "movie" -> 1; "tv" -> 2; else -> return false }, item.season, item.episode,
+            subtitleCallback, callback)
     }
 
     data class LinkData(
@@ -382,6 +339,7 @@ open class AdiDrakor : TmdbProvider() {
         val isAsian: Boolean = false,
         val isBollywood: Boolean = false,
         val isCartoon: Boolean = false,
+        val alternativeTitles: List<String> = emptyList(),
     )
 
     // Data class lainnya tetap dengan penambahan @param:
@@ -470,6 +428,7 @@ open class AdiDrakor : TmdbProvider() {
 
     data class ResultsAltTitles(
         @param:JsonProperty("results") val results: List<AltTitles>? = emptyList(),
+        @param:JsonProperty("titles") val titles: List<AltTitles>? = emptyList(),
     )
 
     data class ExternalIds(

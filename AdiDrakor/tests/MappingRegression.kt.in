@@ -1,0 +1,138 @@
+package PACKAGE
+
+import kotlinx.coroutines.*
+import org.json.JSONObject
+import com.lagradost.cloudstream3.PlaybackApiFixture
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.SubtitleFile
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
+
+fun main() = runBlocking {
+    var count = 0
+    suspend fun test(name: String, block: suspend () -> Unit) { block();count++;println("PASS $name") }
+    val r = MATCHER.Request(listOf("Example", "Judul Asli"),2022,1,null,null)
+    val movie = MATCHER.Subject("123","Example",2022,1)
+    fun raw(s: MATCHER.Subject) = JSONObject().put("subjectId",s.id).put("title",s.title)
+        .put("releaseDate","${s.year}-01-01").put("subjectType",s.type)
+    fun search(s: MATCHER.Subject = movie) = """{"code":0,"data":{"results":[{"subjects":[${raw(s)}]}]}}"""
+    fun detail(s: MATCHER.Subject = movie) = """{"code":0,"data":${raw(s)}}"""
+    val seasons = """{"code":0,"data":{"seasons":[{"se":1,"maxEp":8},{"se":2,"maxEp":6}]}}"""
+    test("movie mapping considers all search results") {
+        check(MATCHER.choose(r,listOf(movie.copy(id="1",year=1999),movie)).subject == movie)
+    }
+    test("original and alternative TMDB titles") {
+        check(MATCHER.choose(r,listOf(movie.copy(title="Judul Asli"))).subject != null)
+    }
+    test("normalization retains non-Latin titles and accents") {
+        check(MATCHER.normalize("Éxample: 2") == "example 2")
+        check(MATCHER.normalize("한국어") != "")
+    }
+    test("wrong year and missing year rejected") {
+        check(MATCHER.choose(r,listOf(movie.copy(year=2021))).subject == null)
+        check(MATCHER.choose(r.copy(year=null),listOf(movie)).subject == null)
+        check(MATCHER.choose(r,listOf(movie.copy(year=null))).subject == null)
+    }
+    test("movie and TV with identical title remain separate") {
+        check(MATCHER.choose(r,listOf(movie.copy(type=2))).subject == null)
+        check(MATCHER.choose(r.copy(type=2,season=1,episode=1),listOf(movie.copy(type=2))).subject != null)
+    }
+    test("ambiguous IDs rejected and repeated same ID deduplicated") {
+        check(MATCHER.choose(r,listOf(movie,movie.copy(id="124"))).reason == "AMBIGUOUS_SUBJECT")
+        check(MATCHER.choose(r,listOf(movie,movie)).subject == movie)
+    }
+    test("similar title is not an exact alias") {
+        check(MATCHER.choose(r,listOf(movie.copy(title="Example Returns"))).subject == null)
+    }
+    test("subject not found") { check(MATCHER.choose(r,emptyList()).subject == null) }
+    test("season and episode must exist exactly") {
+        check(MATCHER.episode(seasons,"123",1,1))
+        check(MATCHER.episode(seasons,"123",2,6))
+        check(!MATCHER.episode(seasons,"123",2,7))
+        check(!MATCHER.episode(seasons,"123",3,1))
+        check(!MATCHER.episode(seasons,"123",1,0))
+    }
+    test("server season metadata identity and error checks") {
+        check(!MATCHER.episode(seasons.replace("\"seasons\":","\"subjectId\":\"124\",\"seasons\":"),"123",1,1))
+        check(!MATCHER.episode(seasons.replace("\"code\":0","\"code\":401"),"123",1,1))
+    }
+    test("detail identity is verified after search") {
+        val got=MATCHER.resolve(r,{search()},{detail(movie.copy(id="124"))},{seasons})
+        check(got.reason == "SUBJECT_DETAIL_IDENTITY_MISMATCH")
+    }
+    test("movie does not request season-info") {
+        val got=MATCHER.resolve(r,{search()},{detail()},{error("Movie season request")})
+        check(got.subject == movie)
+    }
+    test("TV validates requested 2/4 without remapping") {
+        val tv=movie.copy(type=2)
+        val got=MATCHER.resolve(r.copy(type=2,season=2,episode=4),{search(tv)},{detail(tv)},{seasons})
+        check(got.subject == tv)
+        check(MATCHER.resolve(r.copy(type=2,season=9,episode=4),{search(tv)},{detail(tv)},{seasons}).reason == "SEASON_OR_EPISODE_UNAVAILABLE")
+    }
+    test("API failure and malformed response return diagnostics") {
+        check(MATCHER.resolve(r,{null},{detail()},{seasons}).reason == "SEARCH_API_FAILED")
+        check(MATCHER.resolve(r,{"invalid"},{detail()},{seasons}).reason == "SEARCH_API_INVALID")
+        check(MATCHER.resolve(r,{"{\"code\":401}"},{detail()},{seasons}).reason == "SEARCH_API_REJECTED")
+    }
+    test("cancellation propagates") {
+        try { MATCHER.resolve(r,{throw CancellationException("fixture")},{detail()},{seasons});error("lost cancellation") }
+        catch (_: CancellationException) {}
+    }
+    test("timeout cancels pending mapping IO") {
+        check(withTimeoutOrNull(30) { MATCHER.resolve(r,{delay(1000);search()},{detail()},{seasons}) } == null)
+    }
+    test("missing TV indices rejected") {
+        check(!MATCHER.valid(r.copy(type=2)))
+        check(!MATCHER.valid(r.copy(type=2,season=1,episode=0)))
+    }
+
+    val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+    server.createContext("/") { ex ->
+        val bytes=byteArrayOf(0,0,0,24)+"ftypisom".toByteArray()+ByteArray(128)
+        ex.sendResponseHeaders(200,bytes.size.toLong());ex.responseBody.use { it.write(bytes) }
+    }
+    server.start()
+    val media="http://127.0.0.1:${server.address.port}/sample.mp4"
+    fun response(req: Request, body: String, token: Boolean=false)=Response.Builder().request(req)
+        .protocol(Protocol.HTTP_1_1).code(200).message("fixture").body(body.toResponseBody("application/json".toMediaType()))
+        .apply { if(token) header("x-user","{\"token\":\"fixture-anonymous\"}") }.build()
+    var tv=false
+    PlaybackApiFixture.responder={ req ->
+        val subject=movie.copy(type=if(tv) 2 else 1)
+        when {
+            req.url.encodedPath.endsWith("ranking-list") -> response(req,"{}",true)
+            req.url.encodedPath.endsWith("search/v2") -> response(req,search(subject))
+            req.url.encodedPath.endsWith("/get") -> response(req,detail(subject))
+            req.url.encodedPath.endsWith("season-info") -> response(req,seasons)
+            req.url.encodedPath.endsWith("subject/play") -> response(req,"""{"code":0,"data":{"subjectId":"123","se":${if(tv) 2 else 0},"ep":${if(tv) 4 else 0},"streams":[{"id":"s1","url":"$media"}]}}""")
+            else -> response(req,"{\"code\":0,\"data\":{}}")
+        }
+    }
+    suspend fun throughRegisteredProvider(isTv: Boolean): List<ExtractorLink> {
+        tv=isTv;PlaybackApiFixture.requests.clear()
+        val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
+        val payload="""{"id":1,"tmdbId":"1","title":"Example","year":2022,"type":"${if(tv) "tv" else "movie"}","isTvSeries":$tv,"season":${if(tv) 2 else 9},"episode":${if(tv) 4 else 9}}"""
+        check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
+        check(links.single().source == "PROVIDER")
+        check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
+        val play=PlaybackApiFixture.requests.first { it.url.encodedPath.endsWith("subject/play") }
+        check(play.url.queryParameter("se") == if(tv) "2" else "0")
+        check(play.url.queryParameter("ep") == if(tv) "4" else "0")
+        return links
+    }
+    try {
+        test("registered MainAPI movie maps to H5 0/0 and local media validates") { throughRegisteredProvider(false) }
+        test("registered MainAPI series maps exact 2/4 and owns link source") { throughRegisteredProvider(true) }
+    } finally {
+        server.stop(0)
+        com.lagradost.cloudstream3.app.baseClient.connectionPool.evictAll()
+        com.lagradost.cloudstream3.app.baseClient.dispatcher.executorService.shutdown()
+        PLAYBACK.client.connectionPool.evictAll()
+        PLAYBACK.client.dispatcher.executorService.shutdown()
+    }
+    println("MAPPING $count PASS; fixture/local HTTP only; device NOT_TESTED")
+}

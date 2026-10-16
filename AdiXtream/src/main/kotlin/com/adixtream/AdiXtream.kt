@@ -5,8 +5,6 @@ import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import com.adixtream.AdiXtreamExtractor.invokeMoviebox
-import com.adixtream.AdiXtreamIdlix.invokeIdlix
 
 // PERBAIKAN 1: Data class untuk menyimpan informasi film/series dari load() ke loadLinks() secara instan
 data class XtreamLinkData(
@@ -16,15 +14,19 @@ data class XtreamLinkData(
     val season: Int? = null,
     val episode: Int? = null,
     val isTvSeries: Boolean,
-    val originalTitle: String? = null
+    val originalTitle: String? = null,
+    val alternativeTitles: List<String> = emptyList()
 )
 
 open class AdiXtream : MainAPI() {
     override var name = "AdiXtream"
-    override var mainUrl = "https://vidsrcme.ru"
+    override var mainUrl = "https://www.themoviedb.org"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "en"
     override val hasMainPage = true
+    override val hasChromecastSupport = false
+    override val hasQuickSearch = true
+    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     val tmdbApiKey = "422bcadf9cfb5ff5b6951cef66b4a0b6"
 
@@ -103,7 +105,7 @@ open class AdiXtream : MainAPI() {
         val isTvSeries = url.contains("/tv/")
         if (isTvSeries) {
             val tmdbId = url.substringAfter("/tv/").substringBefore("/")
-            val tvDetail = app.get("https://api.themoviedb.org/3/tv/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,videos,recommendations").parsedSafe<TmdbTvDetailResponse>()
+            val tvDetail = app.get("https://api.themoviedb.org/3/tv/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,videos,recommendations,alternative_titles").parsedSafe<TmdbTvDetailResponse>()
                 ?: throw ErrorLoadingException("Gagal mengambil data Series dari TMDB")
 
             val title = tvDetail.name ?: "Tanpa Judul"
@@ -125,7 +127,8 @@ open class AdiXtream : MainAPI() {
                             season = season.seasonNumber,
                             episode = ep.episodeNumber,
                             isTvSeries = true,
-                            originalTitle = originalTitle
+                            originalTitle = originalTitle,
+                            alternativeTitles = tvDetail.alternativeTitles?.all().orEmpty()
                         ).toJson()
 
                         episodes.add(newEpisode(linkData) {
@@ -166,7 +169,7 @@ open class AdiXtream : MainAPI() {
             }
         } else {
             val tmdbId = url.substringAfter("/movie/").substringBefore("/")
-            val movieDetail = app.get("https://api.themoviedb.org/3/movie/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,videos,recommendations").parsedSafe<TmdbDetailResponse>()
+            val movieDetail = app.get("https://api.themoviedb.org/3/movie/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,videos,recommendations,alternative_titles").parsedSafe<TmdbDetailResponse>()
                 ?: throw ErrorLoadingException("Gagal mengambil data Movie dari TMDB")
 
             val title = movieDetail.title ?: "Tanpa Judul"
@@ -179,7 +182,8 @@ open class AdiXtream : MainAPI() {
                 title = title,
                 year = year,
                 isTvSeries = false,
-                originalTitle = originalTitle
+                originalTitle = originalTitle,
+                alternativeTitles = movieDetail.alternativeTitles?.all().orEmpty()
             ).toJson()
 
             return newMovieLoadResponse(title, url, TvType.Movie, linkData) {
@@ -209,42 +213,21 @@ open class AdiXtream : MainAPI() {
         }
     }
 
+    private val movieboxEngine by lazy { AdiXtreamMovieboxEngine(name) }
+
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): okhttp3.Interceptor =
+        movieboxEngine.getVideoInterceptor(extractorLink)
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val linkData = tryParseJson<XtreamLinkData>(data) ?: return false
-
-        runAllAsync(
-            {
-                invokeMoviebox(
-                    title = linkData.title,
-                    orgTitle = linkData.originalTitle,
-                    altTitle = null,
-                    year = linkData.year,
-                    airedYear = linkData.year,
-                    season = linkData.season,
-                    episode = linkData.episode,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
-            },
-            {
-                invokeIdlix(
-                    title = linkData.title,
-                    orgTitle = linkData.originalTitle,
-                    altTitle = null,
-                    year = linkData.year,
-                    season = linkData.season,
-                    episode = linkData.episode,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback
-                )
-            }
-        )
-
-        return true
+        val item = com.lagradost.cloudstream3.utils.AppUtils.tryParseJson<XtreamLinkData>(data) ?: return false
+        return movieboxEngine.resolve(
+            listOfNotNull(item.title, item.originalTitle) + item.alternativeTitles, item.year, if (item.isTvSeries) 2 else 1, item.season, item.episode,
+            subtitleCallback, callback)
     }
+
 }
