@@ -103,6 +103,20 @@ internal object Adicinemax21MovieboxMapping {
         return JSONObject().put("code",0).put("data",JSONObject().put("items",JSONArray(items))).toString()
     }
 
+    /** Public H5 marks originals with a flag plus ISO code rather than a language name. */
+    fun playbackMetadata(meta: JSONObject): JSONObject {
+        val copy=JSONObject(meta.toString())
+        val id=Adicinemax21MovieboxPlayback.text(copy,"subjectId")
+        val original=Adicinemax21MovieboxPlayback.objects(copy.optJSONArray("dubs")).singleOrNull {
+            it.opt("original")==true && Adicinemax21MovieboxPlayback.text(it,"subjectId")==id
+        }
+        val code=original?.let { Adicinemax21MovieboxPlayback.text(it,"lanCode") }?.lowercase(Locale.ROOT)
+            ?.substringBefore('-')?.substringBefore('_')
+        if(code!=null && code.matches(Regex("[a-z]{2,3}")))
+            copy.put("lanName",code)
+        return copy
+    }
+
     suspend fun resolve(r: Request, search: suspend (String) -> String?,
         detail: suspend (String) -> String?, seasons: suspend (String) -> String?): Result {
         if (!valid(r)) return Result(null,"INSUFFICIENT_TMDB_IDENTITY")

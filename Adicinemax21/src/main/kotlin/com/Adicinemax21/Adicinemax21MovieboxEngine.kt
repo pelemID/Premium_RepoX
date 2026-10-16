@@ -713,7 +713,7 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
                 Log.d(TAG,"[MAPPING] verified subject=${subject.id} type=$type year=${subject.year} detailPath=${match.metadata?.has("detailPath")==true}")
                 val selected=EpData(subject.id,if(type==1) 0 else season!!,if(type==1) 0 else episode!!,type)
                 val context=match.metadata?.takeIf { Adicinemax21MovieboxPlayback.detailPath(it,subject.id).isNotBlank() }
-                    ?.let { mapOf(subject.id to it) }.orEmpty()
+                    ?.let { mapOf(subject.id to Adicinemax21MovieboxMapping.playbackMetadata(it)) }.orEmpty()
                 loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback,context)
             } catch(e: CancellationException) { throw e
             } catch(e: Exception) {

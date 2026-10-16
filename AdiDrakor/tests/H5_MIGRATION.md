@@ -29,8 +29,9 @@ Ambiguous subject IDs collapse only when the server explicitly declares their
 membership in the same `dubs` family, marks exactly one original, and that original
 passes independent title/year/type verification. Unrelated same-title identities
 remain ambiguous. Native metadata is enriched with a same-ID public detailPath
-and declared dubs, then passed as request-local H5 metadata. No title-specific
-subject IDs or slugs are hardcoded. The playback flow differs from the reference
+and declared dubs, then passed as request-local H5 metadata. The original=true dub entry's declared ISO language is preserved in that
+context so Korean/Japanese original audio is not mistaken for an unsupported
+dub. No new title-specific subject IDs or slugs are hardcoded in the adapter. The playback flow differs from the reference
 only by this verified metadata context bridge; its transport/auth/audio/validation
 behavior and standalone Moviebox production source stay unchanged.
 

@@ -143,6 +143,17 @@ fun main() = runBlocking {
         val wrong=JSONObject(insidious.toString()).put("releaseDate","2025-01-01")
         check(MATCHER.resolve(insidiousRequest,{catalog(insidious)},{envelope(wrong)},{null}).subject==null)
     }
+    test("public original ISO language preserves Korean audio and does not relabel a dub") {
+        val original=JSONObject(insidious.toString())
+        original.getJSONArray("dubs").getJSONObject(0).put("lanCode","ko")
+        val normalized=MATCHER.playbackMetadata(original)
+        check(PLAYBACK.audioLanguages(normalized).first()=="ko")
+        check(!original.has("lanName"))
+        val raw="""{"code":0,"data":{"streams":[{"url":"https://cdn.example.test/original.mp4","lanName":"Korean"}]}}"""
+        val streams=PLAYBACK.parse(raw,"H5",originalId,0,0,"",PLAYBACK.audioLanguages(normalized).first())
+        check(streams.single().category==PLAYBACK.AudioCategory.ORIGINAL)
+        check(!MATCHER.playbackMetadata(JSONObject(original.toString()).put("subjectId",dubId)).has("lanName"))
+    }
     test("invalid Nuxt reference graph and script text are never executed") {
         check(MATCHER.catalogPage("<script id=__NUXT_DATA__ type=application/json>[{\"subjectId\":0,\"title\":0}]</script>").isEmpty())
         check(MATCHER.catalogPage("<script>throw new Error('no')</script>").isEmpty())
