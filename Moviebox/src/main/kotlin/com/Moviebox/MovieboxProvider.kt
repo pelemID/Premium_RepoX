@@ -1313,11 +1313,12 @@ class MovieBoxProvider : MainAPI() {
         }
 
         suspend fun collectStreams(raw: String, subject: String, origin: String,
-                         referer: String, audio: String = ""): Int {
-            val parsed = try { MovieboxPlayback.parse(raw,"H5",subject,se,ep,audio) }
+                         referer: String, audio: String, originalLanguage: String): Int {
+            val parsed = try { MovieboxPlayback.parse(raw,"H5",subject,se,ep,audio,originalLanguage) }
                 catch (_: Exception) { emptyList() }
             // Policy resources are media candidates, not authorization to strip signed query parameters.
-            val candidates = parsed.flatMap { stream ->
+            val candidates = parsed.filter { it.category != MovieboxPlayback.AudioCategory.UNSUPPORTED }
+                .flatMap { stream ->
                 val policy = extractPlaybackPolicyResource(stream.cookie)
                 if (policy != null && MovieboxPlayback.http(policy) && policy != stream.url) {
                     listOf(stream.copy(url = policy, format = "DASH"),
@@ -1355,17 +1356,24 @@ class MovieBoxProvider : MainAPI() {
                 choices[key] = PlaybackChoice(stream,headers,referer,valid.format)
                 count++
             }
-            Log.d(TAG, "[PLAYBACK-H5] candidates=${candidates.size} validated=$count se=$se ep=$ep")
+            Log.d(TAG, "[PLAYBACK-H5] subject=$subject parsed=${parsed.size} audioFiltered=${parsed.count { it.category == MovieboxPlayback.AudioCategory.UNSUPPORTED }} candidates=${candidates.size} validated=$count se=$se ep=$ep")
             return count
         }
         fun query(subject: String) = "subjectId=$subject&se=$se&ep=$ep"
         // Detail is read solely for H5 paths and explicitly declared audio subjects.
         val detail = metadata(selected.subjectId)
         val subjects = mutableListOf(Triple(selected.subjectId,"",detail))
+        // Same-ID server metadata can identify the selected subject's original language.
+        val originalLanguage = MovieboxPlayback.audioLanguages(detail ?: JSONObject()).firstOrNull()
+            ?: MovieboxPlayback.objects(detail?.optJSONArray("dubs"))
+                .firstOrNull { MovieboxPlayback.text(it,"subjectId") == selected.subjectId }
+                ?.let { MovieboxPlayback.audioLanguages(it).firstOrNull() }.orEmpty()
         MovieboxPlayback.objects(detail?.optJSONArray("dubs")).forEach { dub ->
             val sid = MovieboxPlayback.text(dub,"subjectId")
-            if (sid.matches(Regex("[0-9]+")) && subjects.none { it.first == sid })
-                subjects += Triple(sid,MovieboxPlayback.text(dub,"lanName"),dub)
+            val category = MovieboxPlayback.dubCategory(dub)
+            if (category != MovieboxPlayback.AudioCategory.UNSUPPORTED &&
+                sid.matches(Regex("[0-9]+")) && subjects.none { it.first == sid })
+                subjects += Triple(sid,MovieboxPlayback.audioLanguages(dub).first(),dub)
         }
         val orderedSubjects = subjects.sortedWith(compareBy<Triple<String,String,JSONObject?>> {
             if (it.first == selected.subjectId) -1 else MovieboxPlayback.audioOrder(it.second)
@@ -1374,7 +1382,9 @@ class MovieBoxProvider : MainAPI() {
         for ((subject,audio,initialDetail) in orderedSubjects) {
             val meta = if (subject == selected.subjectId) initialDetail else metadata(subject)
             val detail = meta ?: initialDetail ?: JSONObject()
-            val encodedPath = URLEncoder.encode(MovieboxPlayback.detailPath(detail),"UTF-8")
+            val path = MovieboxPlayback.detailPath(detail)
+            Log.d(TAG,"[PLAYBACK-H5] subject=$subject metadata=${meta != null} detailPathAvailable=${path.isNotBlank()} se=$se ep=$ep")
+            val encodedPath = URLEncoder.encode(path,"UTF-8")
             val webDetail = MovieboxPlayback.text(detail,"detailUrl")
             val fromDetail = if (MovieboxPlayback.http(webDetail)) URI(webDetail).let { "${it.scheme}://${it.host}" } else null
             val hosts = (listOfNotNull(preferredHost,fromDetail?.takeIf { it in MovieboxPlayback.webDomains }) +
@@ -1385,7 +1395,8 @@ class MovieBoxProvider : MainAPI() {
                     "&streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1"
                 val referer = "$host/movies/$encodedPath?id=$subject&type=/movie/detail&detailSe=&detailEp=&lang=en"
                 val response = playbackRequest(url,webHeaders(host,referer)) ?: continue
-                if (response.first == 200 && collectStreams(response.second,subject,host,referer,audio) > 0) {
+                if (response.first == 200 && collectStreams(response.second,subject,host,referer,audio,
+                        if (subject == selected.subjectId) originalLanguage else "") > 0) {
                     preferredHost = host
                     break
                 }
@@ -1393,9 +1404,11 @@ class MovieBoxProvider : MainAPI() {
         }
         // Global, deterministic labels: one audio name, one media format, one codec.
         // CloudStream adds the quality itself; do not repeat "1080p" in the source name.
-        val orderedChoices = choices.values.sortedWith(compareBy<PlaybackChoice> {
-            MovieboxPlayback.audioOrder(it.stream.audio)
-        }.thenBy { MovieboxPlayback.audioName(it.stream.audio) }
+        val orderedChoices = choices.values.filter {
+            it.stream.category != MovieboxPlayback.AudioCategory.UNSUPPORTED
+        }.sortedWith(compareBy<PlaybackChoice> {
+            it.stream.category.ordinal
+        }
             .thenByDescending { it.stream.quality ?: 0 }
             .thenBy { MovieboxPlayback.codecOrder(it.stream.codec) }
             .thenBy { it.format.ordinal })
@@ -1442,7 +1455,7 @@ class MovieBoxProvider : MainAPI() {
             }
         }
         if (choices.isEmpty()) Log.e(TAG,"[PLAYBACK-H5] no validated resource subject=${selected.subjectId} se=$se ep=$ep")
-        return choices.isNotEmpty()
+        return orderedChoices.isNotEmpty()
     }
 
     data class RankingResponse(val code: Int?, val data: RankingData?)

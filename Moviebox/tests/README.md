@@ -6,7 +6,7 @@ runs the JVM fixtures. Optional `CLOUDSTREAM_JAR` selects the Gradle SDK jar; `M
 selects a test-only dependency cache. Android/app/link-builder shims are never packaged.
 Fixtures are sanitized and do not establish live service or Android playback success.
 
-## Current behavior — plugin version 14
+## Current behavior — plugin version 15
 
 - Media uses **H5 only**: `subject/play` with the exact subjectId, season, episode, detailPath,
   streamSignType and codec flags. No requests to mobile `play-info`, `play-info/v2`, or media
@@ -21,13 +21,24 @@ Fixtures are sanitized and do not establish live service or Android playback suc
   streams, even after another audio subject succeeds. The prior two-alias cap is removed;
   a successful alias is preferred for later audio subjects. The first usable alias supplies
   all its DASH/HLS/direct choices; aliases are not invented as separate video servers.
-- Labels use `Asli • Video • H.264`, `Indonesia • DASH • H.265`, etc. Language and codec names
+- Playback audio has an explicit ORIGINAL/INDONESIAN/ENGLISH/UNSUPPORTED whitelist.
+  The selected subject remains the default/original source. Only explicitly labelled original,
+  Indonesian or English entries from `dubs[]` are requested; unknown/unlabelled dubs are skipped.
+  Matching is exact after removing whole-word dub/audio decoration, never substring matching.
+  APK codes `in_id`/`ind` and `en`/`eng`, and Indonesian/English display aliases are accepted.
+- H5 stream `lanName`/`lan`/`language` are checked before media validation and callback. Missing
+  stream language inherits only its proven selected-original or whitelisted-dub context.
+  A non-English original language is retained as Asli when it matches same-subject metadata
+  (including the selected ID's entry in `dubs[]`); contradictory/unsupported languages are rejected.
+  Unknown dub metadata is never turned into Asli. Captions have **no audio language filter**.
+- Labels use `MovieBox • Asli • Video • H.264`, `MovieBox • Indonesia • DASH • H.265`, etc. Language and codec names
   are normalized, repeated "dub Audio" removed, and quality is left to CloudStream's display.
   Choices are ordered by audio group, descending quality and compatible codec preference.
   Distinct CDN alternatives with otherwise identical labels receive a server suffix.
 - Each signed request is validated independently. After validation only, signature rotations
   for the same resource/audio are deduplicated. The actual signed URL is never rewritten;
-  content/codec/quality selectors and unknown token parameters remain significant.
+  content selectors and unknown token parameters remain significant. Explicit quality and codec
+  also remain part of the identity, preserving variants sharing a media URL.
 - Existing GET/Range bounds, manifest/segment checks, signed Cookie/token scoping, DRM rejection
   and both caption endpoints are preserved. Caption failure never invalidates usable video.
 
@@ -59,10 +70,15 @@ No restriction override headers, public proxies, paywall or DRM bypass were adde
 
 ## Validation
 
-- 22 schema/media regressions: PASS.
-- 17 provider/crypto/local HTTP integration scenarios: PASS.
+- 29 schema/media regressions: PASS (the previous 22 plus seven audio/quality/subtitle cases).
+- 20 provider/crypto/local HTTP integration scenarios: PASS (the previous 17 plus three cases).
+  The new cases cover skipped dub requests, callback filtering, all three audio categories,
+  original Korean audio, DASH/HLS/direct choices, quality preservation, unrestricted subtitles,
+  and exact Reacher identity/path/episode through 403/404/API errors/mismatch/notice responses.
 - Production compilation against real CloudStream/NiceHttp/OkHttp APIs: PASS.
-- Android plugin packaging: the GitHub Build result is separate from local fixture validation.
+- Local Gradle `:Moviebox:assembleRelease`: BLOCKED before build while downloading Gradle
+  (`Network is unreachable` in the Java wrapper); no local Android SDK/device is installed.
+  Production Android packaging is verified separately by the commit's GitHub Build workflow.
 - Device playback of this version: NOT_TESTED.
 
 Tests cover absence of v2/native requests, movie 0/0 and serial 1/1 or 2/4, failed bearer,
@@ -79,3 +95,58 @@ That reference also contained sports playPath/playSource branches; none were por
 The current cleanup baseline is `3c2677ac7dfd472a68552606314017758fd67591`.
 Catalog, search, posters, details, episode listing, recommendations, trailer and other providers
 are unchanged by this cleanup.
+
+## Official APK audit — 2026-10-16
+
+Attachment: `moviebox-v-4.0.03.0922.03.apk`.
+SHA-256: `d219ac4d31c33c865bffdc9ebdcf26798ca3f508fd33fcb5858b9904c5cc8364`.
+Binary manifest decoded with Androguard 4.1.4: package `com.community.oneroom`,
+version **4.0.03.0922.03**, versionCode **50020131**, entry application `s.h.e.l.l.S`,
+component factory `s.h.e.l.l.A`, splash `com.transsion.subroom.activity.SplashActivity`.
+The official package/version differs from the existing regional metadata profile. That
+observation alone does not establish a playback fault and the working profile is unchanged.
+
+Actual DEX instruction disassembly, not only filename/string inspection, found only four
+class definitions: `s.h.e.l.l.A`, `.C`, `.N`, `.S` (193 strings, 106 method references).
+`A.instantiateApplication` delegates class loading through native `N.al`; `S.onCreate`
+invokes native `N.ra` before delegating to `com.transsion.subroom.app.SubRoomApp`.
+The DEX map is at offset 13700 despite a 64,064,740-byte file. JNI loader assets include
+`assets/ijm_lib/*/libexec.so`, `libexecmain.so`, and `assets/IJMDal.Data`; script/config
+assets are also protected. The accessible DEX contains no business playback methods,
+Reacher mapping, H5/native playback endpoint or request-building implementation.
+Resource routeMap names movie/stream-detail activities; names do not reveal their logic.
+Player/codec libraries likewise do not prove an extra server route.
+
+`assets/sub_def_la.json` was read: `en` / `eng` / English and `in_id` / `ind` / Indonesia
+are verified language identifiers. This is a language dictionary, not proof of an audio
+subject mapping or a playback API contract. It is used only to normalize language codes.
+No conclusion about hidden playback requests, host selection, season offsets, preflight
+calls or alternate Reacher subject IDs can be drawn from the loader stub.
+There is no adb, emulator, Android SDK or attached Android runtime in this environment.
+Consequently no official-app network capture or runtime unprotection was performed.
+
+The new screen recording `585219.mp4` (499.39 seconds) shows Take Charge of My Heart playing
+with Asli/Indonesia/Inggris and other dub choices, then a Reacher search followed by loading.
+It does not expose app HTTP requests or prove an alternate Reacher subject/path/episode.
+
+### Bounded live comparison
+
+A separate anonymous metadata probe used the manifest's actual package/version with the
+existing signature algorithm, without a borrowed device/session or regional override.
+This is **not** a captured official-app request and cannot establish runtime parity.
+Results from this environment on 2026-10-16:
+
+- Mobile exact-subject metadata: HTTP 403, `Service not available in current region`.
+- Official H5 exact-subject detail: HTTP 404, `subject not found` / `TARGET_NOT_FOUND`.
+- Official H5 play, exact ID `3620534210064175096`, S1E1, empty unavailable detailPath:
+  HTTP 200 / code 0; empty `streams`, `dash`, `hls`; `hasResource=false`, `limited=false`,
+  `limitedCode=""`, `vipLocked=false`, `shareUnlocked=false`; codecs hevc/h264.
+
+The APK profile comparison did not recover metadata or prove a valid detailPath. These
+responses establish only that the tested requests returned no media. Reacher's underlying
+service/runtime cause remains **UNRESOLVED**, and Reacher playback/device testing is BLOCKED.
+No Reacher-specific server/subject/episode replacement or native/v2 reactivation is shipped.
+The synthetic Reacher tests exercise failure safety, not a claimed fix or live playback.
+Logs now distinguish unavailable detailPath and parsed/audio-filtered/validated counts without
+logging response bodies, signed URLs, credentials or cookies. A supported official-app runtime
+capture remains necessary to compare the hidden business request contract accurately.

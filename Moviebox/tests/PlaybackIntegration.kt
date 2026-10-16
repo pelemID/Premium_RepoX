@@ -31,6 +31,7 @@ fun main() = runBlocking {
             exchange.sendResponseHeaders(302,-1);exchange.close();return@createContext
         }
         val bytes = when {
+            path.endsWith(".mpd") -> "<MPD><Period><AdaptationSet mimeType=\"video/mp4\"><Representation id=\"v\"><SegmentTemplate media=\"segment.mp4\"/></Representation></AdaptationSet></Period></MPD>".toByteArray()
             path.endsWith(".m3u8") -> "#EXTM3U\n#EXTINF:5,\nsegment.mp4\n".toByteArray()
             path.contains("notice") -> "<html>Upgrade</html>".toByteArray()
             else -> video
@@ -82,7 +83,7 @@ fun main() = runBlocking {
                 else -> response(r)
             } }
             val (ok,links,_)=load();check(ok && links.size==1)
-            check(links.single().name=="Asli • Video")
+            check(links.single().name=="MovieBox • Asli • Video")
         }
         test("no bearer or metadata available: guest H5 still works") {
             PlaybackApiFixture.responder = { r -> if(r.url.encodedPath.endsWith("subject/play"))
@@ -158,7 +159,7 @@ fun main() = runBlocking {
                 r.url.encodedPath.endsWith("subject/play") && r.url.host=="123moviesfree.club" -> response(r,body=json("alias.mp4"))
                 else -> response(r,503)
             } }
-            val (ok,links,_)=load(2,4);check(ok && links.single().name.startsWith("Asli"))
+            val (ok,links,_)=load(2,4);check(ok && links.single().name.startsWith("MovieBox • Asli"))
             val alias=PlaybackApiFixture.requests.single { it.url.host=="123moviesfree.club" }
             check(alias.header("Authorization")==null && alias.url.queryParameter("se")=="2" && alias.url.queryParameter("ep")=="4")
         }
@@ -170,7 +171,7 @@ fun main() = runBlocking {
             PlaybackApiFixture.responder = { r -> if(r.url.encodedPath.endsWith("subject/play"))
                 response(r,body="""{"data":{"streams":[{"url":"$root/rotate.mp4?Signature=expired","id":"x","codecName":"h264","resolutions":"1080"},{"url":"$root/rotate.mp4?Signature=valid","id":"y","codecName":"h264","resolutions":"1080"},{"url":"$root/rotate.mp4?Signature=other","id":"z","codecName":"h264","resolutions":"1080"}]}}""") else response(r) }
             val (ok,links,_)=load();check(ok && links.size==1)
-            check(links.single().name=="Asli • Video • H.264" && links.single().quality==1080)
+            check(links.single().name=="MovieBox • Asli • Video • H.264" && links.single().quality==1080)
             check(!links.single().url.contains("expired"))
         }
         test("dub on third alias remains discoverable after original H5 already succeeded") {
@@ -181,7 +182,7 @@ fun main() = runBlocking {
                 else -> response(r,404)
             } }
             val (ok,links,_)=load(2,4);check(ok && links.size==2)
-            check(links[0].name.startsWith("Asli") && links[1].name.startsWith("Indonesia"))
+            check(links[0].name.startsWith("MovieBox • Asli") && links[1].name.startsWith("MovieBox • Indonesia"))
             check(PlaybackApiFixture.requests.any { it.url.host=="movie-box.co" && it.url.queryParameter("subjectId")=="456" })
             check(PlaybackApiFixture.requests.filter { it.url.queryParameter("subjectId")=="123" && it.url.encodedPath.endsWith("subject/play") }
                 .all { it.url.queryParameter("detailPath")=="correct-path" })
@@ -214,6 +215,73 @@ fun main() = runBlocking {
             val (ok,links,_)=load(1,1,"3620534210064175096");check(!ok && links.isEmpty())
             check(PlaybackApiFixture.requests.count { it.url.encodedPath.endsWith("subject/play") }==MovieboxPlayback.webDomains.size)
             check(mediaRequests.isEmpty())
+        }
+        test("audio filtering skips unsupported dub requests and retains original Indonesian English qualities") {
+            val metadata="""{"data":{"subjectId":"123","dubs":[
+                {"subjectId":"123","lanName":"Korean"},
+                {"subjectId":"456","lan":"in_id","lanName":"Indonesia"},
+                {"subjectId":"789","lan":"en","lanName":"English"},
+                {"subjectId":"900","lanName":"Hindi"},
+                {"subjectId":"901","lanName":"Japanese"},
+                {"subjectId":"902"},
+                {"subjectId":"903","lan":"hi","lanName":"English"}]}}"""
+            PlaybackApiFixture.responder = { r -> when {
+                r.url.encodedPath.endsWith("subject-api/get") && r.url.queryParameter("subjectId")=="123" -> response(r,body=metadata)
+                r.url.encodedPath.endsWith("subject/play") -> when (r.url.queryParameter("subjectId")) {
+                    "123" -> response(r,body="""{"data":{"streams":[{"id":"orig","url":"$root/ko.mp4","lanName":"Korean"}]}}""")
+                    "456" -> response(r,body="""{"data":{"dash":[{"url":"$root/indo.mpd","lan":"in_id","resolutions":"1080","codecName":"hevc"}],"hls":[{"url":"$root/indo.m3u8","lanName":"Indonesian","resolutions":"720"}],"streams":[{"url":"$root/indo.mp4","resolutions":"1080","codecName":"h264"},{"url":"$root/indo.mp4","resolutions":"480","codecName":"h264"}]}}""")
+                    "789" -> response(r,body=json("en.mp4"))
+                    else -> error("Unsupported dub requested")
+                }
+                r.url.encodedPath.endsWith("get-stream-captions") -> response(r,body="""{"data":{"extCaptions":[{"lanName":"Hindi","url":"https://subs.example.test/hi.srt"},{"lanName":"Japanese","url":"https://subs.example.test/ja.srt"}]}}""")
+                else -> response(r,404)
+            } }
+            val (ok,links,subs)=load(1,1);check(ok && links.size==6)
+            check(links.count { it.name.startsWith("MovieBox • Asli") }==1)
+            check(links.count { it.name.startsWith("MovieBox • Indonesia") }==4)
+            check(links.count { it.name.startsWith("MovieBox • Inggris") }==1)
+            check(links.filter { it.url.endsWith("indo.mp4") }.map { it.quality }.toSet()==setOf(1080,480))
+            check(links.all { !it.name.contains("1080") && !it.name.contains("dub",true) })
+            check(PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("subject/play") }
+                .map { it.url.queryParameter("subjectId") }.toSet()==setOf("123","456","789"))
+            check(PlaybackApiFixture.requests.none { it.url.queryParameter("subjectId") in setOf("900","901","902","903") })
+            check(subs.map { it.url }.toSet()==setOf("https://subs.example.test/hi.srt","https://subs.example.test/ja.srt"))
+            // Preserve the existing subtitle audio-context suffix; audio filtering must not rename it.
+            check(subs.map { it.lang }.toSet()==setOf("Hindi (Korea)","Japanese (Korea)"))
+        }
+        test("actual H5 language is filtered before media fetch and CloudStream callback") {
+            PlaybackApiFixture.responder = { r -> when {
+                r.url.encodedPath.endsWith("subject-api/get") -> response(r,body="""{"data":{"subjectId":"123","dubs":[{"subjectId":"456","lanName":"Indonesia"}]}}""")
+                r.url.encodedPath.endsWith("subject/play") && r.url.queryParameter("subjectId")=="123" -> response(r,body=json("original.mp4"))
+                r.url.encodedPath.endsWith("subject/play") -> response(r,body="""{"data":{"streams":[{"url":"$root/hindi-blocked.mp4","lanName":"Hindi"},{"url":"$root/conflict-blocked.mp4","lan":"hi","lanName":"English"},{"url":"$root/actual-en.mp4","lan":"eng"},{"url":"$root/actual-id.mp4"}]}}""")
+                else -> response(r,404)
+            } }
+            val (ok,links,_)=load();check(ok && links.size==3)
+            check(links.any { it.name.startsWith("MovieBox • Inggris") && it.url.endsWith("actual-en.mp4") })
+            check(links.any { it.name.startsWith("MovieBox • Indonesia") && it.url.endsWith("actual-id.mp4") })
+            check(links.none { it.url.contains("blocked") } && mediaRequests.none { it.first.contains("blocked") })
+        }
+        test("Reacher exact identity path and episode reject errors mismatches and notice without substitutions") {
+            val id="3620534210064175096"
+            for (scenario in listOf("403","404","api-error","mismatch","notice")) {
+                PlaybackApiFixture.requests.clear()
+                PlaybackApiFixture.responder = { r -> when {
+                    r.url.encodedPath.endsWith("subject-api/get") -> response(r,body="""{"data":{"subjectId":"$id","detailPath":"fixture-exact-path","dubs":[{"subjectId":"999","lanName":"Hindi"}]}}""")
+                    r.url.encodedPath.endsWith("subject/play") -> when (scenario) {
+                        "403", "404" -> response(r,scenario.toInt())
+                        "api-error" -> response(r,body="""{"code":500,"data":{"streams":[{"url":"$root/wrong.mp4"}]}}""")
+                        "mismatch" -> response(r,body="""{"data":{"subjectId":"$id","se":1,"ep":2,"streams":[{"url":"$root/wrong.mp4"}]}}""")
+                        else -> response(r,body=json("upgrade-notice.mp4"))
+                    }
+                    else -> response(r,404)
+                } }
+                val (ok,links,_)=load(1,1,id);check(!ok && links.isEmpty())
+                val playback=PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("subject/play") }
+                check(playback.size==MovieboxPlayback.webDomains.size)
+                check(playback.all { it.url.queryParameter("subjectId")==id && it.url.queryParameter("se")=="1" &&
+                    it.url.queryParameter("ep")=="1" && it.url.queryParameter("detailPath")=="fixture-exact-path" })
+                check(mediaRequests.isEmpty())
+            }
         }
         println("INTEGRATION $count PASS; synthetic API/local HTTP, MovieBox device playback NOT_TESTED")
     } finally {

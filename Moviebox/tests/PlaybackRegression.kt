@@ -71,7 +71,7 @@ fun main() = runBlocking {
     test("dedup preserves differing signed queries and audio, ignores fragments") {
         check(MovieboxPlayback.key(stream()) == MovieboxPlayback.key(stream(url+"#fragment")))
         check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream(url+"&token=other")))
-        check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream().copy(audio="Indonesia")))
+        check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream().copy(audio="Indonesia",category=MovieboxPlayback.AudioCategory.INDONESIAN)))
     }
     test("validated signature rotations deduplicate without mutating signed request URLs") {
         val a=stream("https://cdn.example.test/a.mp4?Signature=one&Policy=p&quality=1080")
@@ -82,8 +82,8 @@ fun main() = runBlocking {
         check(MovieboxPlayback.key(a)!=MovieboxPlayback.key(b.copy(url=b.url.replace("quality=1080","quality=720"))))
     }
     test("labels normalize language codec and avoid duplicated quality") {
-        val label=MovieboxPlayback.label(stream().copy(audio="Indonesian dub Audio",codec="hevc"),MovieboxPlayback.Format.DASH)
-        check(label=="Indonesia • DASH • H.265")
+        val label=MovieboxPlayback.label(stream().copy(audio="Indonesian dub Audio",codec="hevc",category=MovieboxPlayback.AudioCategory.INDONESIAN),MovieboxPlayback.Format.DASH)
+        check(label=="MovieBox • Indonesia • DASH • H.265")
         check(!label.contains("1080") && !label.contains("dub",true))
         check(MovieboxPlayback.audioName("English dub")=="Inggris")
         check(MovieboxPlayback.audioName("")=="Asli")
@@ -95,6 +95,51 @@ fun main() = runBlocking {
         check(MovieboxPlayback.detailPath(detail)=="correct-slug")
         check(MovieboxPlayback.metadata(raw,"456")==null)
         check(MovieboxPlayback.metadata("""{"code":404,"data":{"subjectId":"123"}}""","123")==null)
+    }
+    test("audio whitelist accepts exact official APK codes and aliases") {
+        val groups = mapOf(
+            MovieboxPlayback.AudioCategory.ORIGINAL to listOf("original","DEFAULT","Asli"),
+            MovieboxPlayback.AudioCategory.INDONESIAN to listOf("id","ind","in_id","Indonesia","Indonesian dub Audio","bahasa indonesia"),
+            MovieboxPlayback.AudioCategory.ENGLISH to listOf("en","eng","English dub","Inggris"))
+        groups.forEach { (category,aliases) -> aliases.forEach { check(MovieboxPlayback.audioCategory(it)==category) } }
+    }
+    test("Hindi other languages unknown and missing dub metadata are unsupported") {
+        for (language in listOf("Hindi","hin","hi","Spanish","Portuguese","Tamil","Telugu","Arabic","French",
+            "Korean","Japanese","Chinese","Bengali","Urdu","", "unidentified", "id-other", "english-ish")) {
+            check(MovieboxPlayback.audioCategory(language)==MovieboxPlayback.AudioCategory.UNSUPPORTED)
+        }
+        check(MovieboxPlayback.dubCategory(JSONObject("""{"subjectId":"456"}"""))==MovieboxPlayback.AudioCategory.UNSUPPORTED)
+        check(MovieboxPlayback.dubCategory(JSONObject("""{"lan":"hi","lanName":"English"}"""))==MovieboxPlayback.AudioCategory.UNSUPPORTED)
+    }
+    test("stream language overrides a supported dubbed subject and rejects conflicting labels") {
+        val raw="""{"data":{"streams":[{"url":"$url","lanName":"Hindi"},{"url":"$url","lan":"en"},{"url":"$url"},{"url":"$url","lanName":"English","lan":"hi"}]}}"""
+        val parsed=MovieboxPlayback.parse(raw,"H5","123",0,0,"Indonesia")
+        check(parsed.map { it.category }==listOf(MovieboxPlayback.AudioCategory.UNSUPPORTED,
+            MovieboxPlayback.AudioCategory.ENGLISH,MovieboxPlayback.AudioCategory.INDONESIAN,
+            MovieboxPlayback.AudioCategory.UNSUPPORTED))
+    }
+    test("original Korean audio is preserved by exact original subject language evidence") {
+        val raw="""{"data":{"streams":[{"url":"$url","lanName":"Korean","lan":"ko"},{"url":"$url"},{"url":"$url","lanName":"Hindi"}]}}"""
+        val parsed=MovieboxPlayback.parse(raw,"H5","123",0,0,"Asli","Korean")
+        check(parsed.map { it.category }==listOf(MovieboxPlayback.AudioCategory.ORIGINAL,
+            MovieboxPlayback.AudioCategory.ORIGINAL,MovieboxPlayback.AudioCategory.UNSUPPORTED))
+        check(parsed.take(2).all { MovieboxPlayback.label(it,MovieboxPlayback.Format.DASH).startsWith("MovieBox • Asli") })
+    }
+    test("explicit original marker preserves the stream even with a foreign language code") {
+        val raw="""{"data":{"streams":[{"url":"$url","lanName":"Original","lan":"ja"}]}}"""
+        val parsed=MovieboxPlayback.parse(raw,"H5","123",0,0)
+        check(parsed.single().category==MovieboxPlayback.AudioCategory.ORIGINAL)
+    }
+    test("same URL retains distinct quality codec and content selector alternatives") {
+        val a=stream()
+        check(MovieboxPlayback.key(a)!=MovieboxPlayback.key(a.copy(quality=720)))
+        check(MovieboxPlayback.requestKey(a)!=MovieboxPlayback.requestKey(a.copy(quality=720)))
+        check(MovieboxPlayback.key(a)!=MovieboxPlayback.key(a.copy(codec="hevc")))
+        check(MovieboxPlayback.key(a)!=MovieboxPlayback.key(a.copy(url=a.url+"&audioTrack=2")))
+    }
+    test("subtitle languages have no audio whitelist") {
+        val raw="""{"data":{"extCaptions":[{"lanName":"Hindi","url":"https://subs.example.test/hi.srt"},{"lanName":"Japanese","url":"https://subs.example.test/ja.srt"},{"lanName":"Arabic","url":"https://subs.example.test/ar.srt"}]}}"""
+        check(MovieboxPlayback.captionEntries(raw).map { it.first }==listOf("Hindi","Japanese","Arabic"))
     }
     val mpd = """<?xml version="1.0"?><MPD><Period><AdaptationSet mimeType="video/mp4"><Representation id="v1" bandwidth="1000" codecs="avc1.42"><SegmentTemplate initialization="init-${'$'}RepresentationID${'$'}.mp4" media="v-${'$'}Number%05d${'$'}.m4s" startNumber="7"/></Representation></AdaptationSet><AdaptationSet mimeType="audio/mp4"><Representation id="a1"><SegmentTemplate initialization="audio-init.mp4" media="audio-${'$'}Time${'$'}.m4s"><SegmentTimeline><S t="42" d="10"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"""
     val mediaUrls = listOf("init-v1.mp4","v-00007.m4s","audio-init.mp4","audio-42.m4s").associate { val u="https://cdn.example.test/title/$it"; u to media(u) }

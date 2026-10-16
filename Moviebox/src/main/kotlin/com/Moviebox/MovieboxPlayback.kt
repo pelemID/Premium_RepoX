@@ -23,9 +23,12 @@ internal object MovieboxPlayback {
         "https://movie-box.co", "https://movieboxonline.net", "https://sflix.film",
         "https://netnaija.film", "https://movieboxhd.net")
     enum class Format { DASH, HLS, VIDEO }
+    enum class AudioCategory(val display: String) {
+        ORIGINAL("Asli"), INDONESIAN("Indonesia"), ENGLISH("Inggris"), UNSUPPORTED("")
+    }
     data class Stream(val url: String, val format: String, val id: String,
         val quality: Int?, val codec: String, val cookie: String?, val signHeader: String,
-        val audio: String, val source: String)
+        val audio: String, val source: String, val category: AudioCategory = audioCategory(audio))
     data class Sample(val url: String, val code: Int, val mime: String, val bytes: ByteArray,
         val truncated: Boolean = false)
     data class Validated(val stream: Stream, val format: Format)
@@ -47,7 +50,7 @@ internal object MovieboxPlayback {
         (!o.has("ep") || o.optInt("ep", -1) == ep)
 
     fun parse(raw: String, source: String, subject: String, se: Int, ep: Int,
-              audio: String = ""): List<Stream> {
+              audio: String = "", originalLanguage: String = ""): List<Stream> {
         if (source != "H5") return emptyList()
         val root = JSONObject(raw)
         if (root.has("code") && root.optInt("code", -1) != 0) return emptyList()
@@ -61,6 +64,19 @@ internal object MovieboxPlayback {
             val quality = Regex("\\d{3,4}").findAll(text(o, "resolutions")
                 .ifBlank { text(o, "resolution") }).mapNotNull { it.value.toIntOrNull() }
                 .filter { it in 144..4320 }.maxOrNull()
+            val languages = audioLanguages(o)
+            // Blank audio is original only for the selected subject, never an unlabelled dub.
+            val parentCategory = if (audio.isBlank()) AudioCategory.ORIGINAL else audioCategory(audio)
+            val categories = languages.map { language ->
+                if (parentCategory == AudioCategory.ORIGINAL && originalLanguage.isNotBlank() &&
+                    audioName(language) == audioName(originalLanguage)) AudioCategory.ORIGINAL
+                else audioCategory(language)
+            }.distinct()
+            val category = when {
+                languages.any { audioCategory(it) == AudioCategory.ORIGINAL } -> AudioCategory.ORIGINAL
+                categories.isEmpty() -> parentCategory
+                else -> categories.singleOrNull() ?: AudioCategory.UNSUPPORTED
+            }
             result += Stream(url, text(o, "format").ifBlank { format },
                 text(o, "id").ifBlank { text(parent, "resourceId") }, quality,
                 text(o, "codecName"), text(o, "signCookie").ifBlank {
@@ -68,7 +84,7 @@ internal object MovieboxPlayback {
                 }.takeIf { it.isNotEmpty() },
                 text(o, "signHeaderKey").ifBlank { text(parent, "signHeaderKey") }
                     .ifBlank { "X-MB-Token" },
-                text(o, "lanName").ifBlank { audio }, source)
+                text(o,"lanName").ifBlank { audio }, source, category)
         }
         // Only H5 movie/series media groups are accepted.
         for ((key, format) in listOf("dash" to "DASH", "hls" to "HLS", "streams" to "")) {
@@ -91,12 +107,26 @@ internal object MovieboxPlayback {
         return try { URI(value).path.orEmpty().trimEnd('/').substringAfterLast('/') }
         catch (_: Exception) { value.substringBefore('?').trimEnd('/').substringAfterLast('/') }
     }
-    fun audioName(raw: String): String {
-        val clean = raw.replace(Regex("(?i)\\b(dub(?:bed)?|audio)\\b"), "")
+    private fun cleanAudio(raw: String): String = raw.replace(Regex("(?i)\\b(dub(?:bed)?|audio)\\b"), "")
             .replace(Regex("[()]"), " ").trim().replace(Regex("\\s+"), " ")
+
+    /** Exact whitelist; missing metadata is not evidence of an original dub. */
+    fun audioCategory(raw: String): AudioCategory = when (cleanAudio(raw).lowercase(Locale.ROOT)) {
+        "original", "default", "asli" -> AudioCategory.ORIGINAL
+        "id", "ind", "in_id", "indonesian", "indonesia", "bahasa indonesia" -> AudioCategory.INDONESIAN
+        "en", "eng", "english", "inggris" -> AudioCategory.ENGLISH
+        else -> AudioCategory.UNSUPPORTED
+    }
+    fun audioLanguages(o: JSONObject): List<String> = listOf("lanName", "lan", "language")
+        .map { text(o,it) }.filter { it.isNotBlank() }
+    fun dubCategory(o: JSONObject): AudioCategory = audioLanguages(o).map { audioCategory(it) }
+        .distinct().singleOrNull() ?: AudioCategory.UNSUPPORTED
+
+    fun audioName(raw: String): String {
+        val clean = cleanAudio(raw)
         return when (clean.lowercase(Locale.ROOT)) {
             "", "original", "default", "asli" -> "Asli"
-            "id", "indonesian", "indonesia", "bahasa indonesia" -> "Indonesia"
+            "id", "ind", "in_id", "indonesian", "indonesia", "bahasa indonesia" -> "Indonesia"
             "en", "eng", "english", "inggris" -> "Inggris"
             "hi", "hin", "hindi" -> "Hindi"
             "es", "spa", "spanish", "español" -> "Spanyol"
@@ -122,12 +152,13 @@ internal object MovieboxPlayback {
         else -> raw.trim().uppercase(Locale.ROOT)
     }
     fun codecOrder(raw: String): Int = when (codecName(raw)) { "H.264" -> 0; "H.265" -> 2; else -> 1 }
-    fun label(s: Stream, format: Format): String = listOf(audioName(s.audio),
+    fun label(s: Stream, format: Format): String = listOf("MovieBox", s.category.display.ifBlank { audioName(s.audio) },
         if (format == Format.VIDEO) "Video" else format.name,
         codecName(s.codec)).filter { it.isNotBlank() }.joinToString(" • ")
 
     /** Validate each signed request separately. Never modify the actual playback URL. */
-    fun requestKey(s: Stream): String = s.url.substringBefore('#') + "|" + audioName(s.audio)
+    fun requestKey(s: Stream): String = s.url.substringBefore('#') + identity(s)
+    private fun identity(s: Stream): String = "|${s.category}|${s.quality}|${codecName(s.codec)}"
     private val authQueryKeys = setOf("policy","signature","key-pair-id","expires",
         "cloudfront-policy","cloudfront-signature","cloudfront-key-pair-id",
         "x-amz-algorithm","x-amz-credential","x-amz-date","x-amz-expires",
@@ -138,7 +169,7 @@ internal object MovieboxPlayback {
         val query = uri.rawQuery.orEmpty().split('&').filter { entry -> entry.isNotBlank() &&
             URLDecoder.decode(entry.substringBefore('='),"UTF-8").lowercase(Locale.ROOT) !in authQueryKeys }
             .joinToString("&")
-        "${uri.scheme}://${uri.rawAuthority}${uri.rawPath}" + (if (query.isEmpty()) "" else "?$query") + "|" + audioName(s.audio)
+        "${uri.scheme}://${uri.rawAuthority}${uri.rawPath}" + (if (query.isEmpty()) "" else "?$query") + identity(s)
     } catch (_: Exception) { requestKey(s) }
     fun format(s: Stream, sample: Sample): Format? {
         val body = sample.bytes.toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\n', '\r', '\t')
