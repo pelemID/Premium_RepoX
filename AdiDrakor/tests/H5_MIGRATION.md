@@ -18,7 +18,7 @@ legacy LinkData and XtreamLinkData remain readable.
 
 Mapping uses exact normalized title aliases, release year and explicit movie/TV
 kind from authoritative same-ID detail, rather than rejecting sparse search rows.
-It gathers up to four title queries (twenty native results per query) and merges
+It gathers up to eight staged queries (twenty native results per query) and merges
 Moviebox's public server-rendered catalog discovery. A failed optional alias does
 not discard validated candidates from another query. The public catalog fallback
 also works when the mobile session is unavailable; it is Moviebox metadata, never
@@ -81,3 +81,36 @@ retained and checks the four target manifests plus standalone Moviebox, DEX,
 versions, byte sizes and SHA-256 hashes before publication. It requires the
 existing builds branch and performs a normal append-only push, never an orphan
 branch recreation or force push. The root Gradle configuration is unchanged.
+
+## Identity-aware staged discovery (recording 585560.mp4)
+
+The recording shows Spider-Man: Brand New Day returning no links while other
+selected titles play. Its public catalog declares subject 6026412232966389904,
+path `spider-man-brand-new-day-Aea8ARY1bb7`, movie type and year 2026. Public H5
+returned one DASH and three direct candidates in this environment. This does
+not establish that every CDN resource validates or that Android playback passes.
+
+The MainAPI now carries the selected TMDB/IMDb identity, synopsis, runtime and
+principal cast in optional playback payload fields. Old payloads still retain
+their selected TMDB ID. Matching checks the authoritative TMDB search for
+same-title/same-year works: one verified work can proceed; ambiguous works need
+an exact external-ID anchor, two matching cast names, or a distinguishing plot
+fingerprint (with runtime support for shorter summaries). Conflicting IDs are
+always rejected. Truncated TMDB result sets never establish uniqueness.
+Release-year differences may be accepted only with an exact external-ID match.
+
+Discovery uses staged exact/original/alternative titles, punctuation variants
+and an optional franchise prefix, up to eight queries. Broader queries never
+relax the final selected-work checks. Every result in the current query is
+validated; a trusted primary match can return without waiting for slow unused
+aliases. Sparse native/public metadata is merged without losing usable cast or
+synopsis fields. Temporary detail failures may retry once; contradictions stay
+rejected. Movie/TV kind and exact server season/episode checks remain in force.
+
+The added fixtures retain only public catalog metadata for the recorded title.
+Tests include the actual MainAPI-to-H5 subject/path contract, same-title/year
+work ambiguity, external-ID conflicts, wrong stories, typed work IDs, search
+truncation, sparse metadata, bounded retry and skipped unnecessary aliases.
+
+Alternative-title-only matches require corroboration even when the primary-title
+TMDB search has one result, preventing cross-film alias collisions.

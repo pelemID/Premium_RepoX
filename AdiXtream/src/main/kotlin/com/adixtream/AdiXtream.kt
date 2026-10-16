@@ -15,7 +15,10 @@ data class XtreamLinkData(
     val episode: Int? = null,
     val isTvSeries: Boolean,
     val originalTitle: String? = null,
-    val alternativeTitles: List<String> = emptyList()
+    val alternativeTitles: List<String> = emptyList(),
+    val overview: String? = null,
+    val runtimeMinutes: Int? = null,
+    val castNames: List<String> = emptyList()
 )
 
 open class AdiXtream : MainAPI() {
@@ -128,7 +131,9 @@ open class AdiXtream : MainAPI() {
                             episode = ep.episodeNumber,
                             isTvSeries = true,
                             originalTitle = originalTitle,
-                            alternativeTitles = tvDetail.alternativeTitles?.all().orEmpty()
+                            alternativeTitles = tvDetail.alternativeTitles?.all().orEmpty(),
+                            overview = tvDetail.overview,
+                            castNames = tvDetail.credits?.cast?.take(8)?.map { it.name }.orEmpty()
                         ).toJson()
 
                         episodes.add(newEpisode(linkData) {
@@ -183,7 +188,9 @@ open class AdiXtream : MainAPI() {
                 year = year,
                 isTvSeries = false,
                 originalTitle = originalTitle,
-                alternativeTitles = movieDetail.alternativeTitles?.all().orEmpty()
+                alternativeTitles = movieDetail.alternativeTitles?.all().orEmpty(),
+                overview = movieDetail.overview, runtimeMinutes = movieDetail.runtime,
+                castNames = movieDetail.credits?.cast?.take(8)?.map { it.name }.orEmpty()
             ).toJson()
 
             return newMovieLoadResponse(title, url, TvType.Movie, linkData) {
@@ -213,7 +220,7 @@ open class AdiXtream : MainAPI() {
         }
     }
 
-    private val movieboxEngine by lazy { AdiXtreamMovieboxEngine(name) }
+    private val movieboxEngine by lazy { AdiXtreamMovieboxEngine(name,tmdbApiKey) }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): okhttp3.Interceptor =
         movieboxEngine.getVideoInterceptor(extractorLink)
@@ -227,7 +234,9 @@ open class AdiXtream : MainAPI() {
         val item = com.lagradost.cloudstream3.utils.AppUtils.tryParseJson<XtreamLinkData>(data) ?: return false
         return movieboxEngine.resolve(
             listOfNotNull(item.title, item.originalTitle) + item.alternativeTitles, item.year, if (item.isTvSeries) 2 else 1, item.season, item.episode,
-            subtitleCallback, callback)
+            subtitleCallback, callback,
+            tmdbId = item.tmdbId.takeIf { it.matches(Regex("[0-9]+")) } ?: return false,
+            overview = item.overview, runtimeMinutes = item.runtimeMinutes, castNames = item.castNames)
     }
 
 }

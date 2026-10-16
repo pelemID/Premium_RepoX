@@ -214,6 +214,8 @@ open class AdiFilmSemi : TmdbProvider() {
                                 title = title,
                                 year = season.airDate?.split("-")?.first()?.toIntOrNull(),
                                 orgTitle = orgTitle,
+                                overview = res.overview, runtimeMinutes = res.runtime,
+                                castNames = res.credits?.cast?.take(8)?.mapNotNull { it.name ?: it.originalName }.orEmpty(),
                                 alternativeTitles = (res.alternativeTitles?.results.orEmpty() + res.alternativeTitles?.titles.orEmpty()).mapNotNull { it.title }.distinct(),
                                 isAnime = isAnime,
                                 airedYear = year,
@@ -273,6 +275,8 @@ open class AdiFilmSemi : TmdbProvider() {
                     title = title,
                     year = year,
                     orgTitle = orgTitle,
+                    overview = res.overview, runtimeMinutes = res.runtime,
+                    castNames = res.credits?.cast?.take(8)?.mapNotNull { it.name ?: it.originalName }.orEmpty(),
                     alternativeTitles = (res.alternativeTitles?.results.orEmpty() + res.alternativeTitles?.titles.orEmpty()).mapNotNull { it.title }.distinct(),
                     isAnime = isAnime,
                     jpTitle = res.alternativeTitles?.results?.find { it.iso31661 == "JP" }?.title,
@@ -300,7 +304,7 @@ open class AdiFilmSemi : TmdbProvider() {
         }
     }
 
-    private val movieboxEngine by lazy { AdiFilmSemiMovieboxEngine(name) }
+    private val movieboxEngine by lazy { AdiFilmSemiMovieboxEngine(name,apiKey) }
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): okhttp3.Interceptor =
         movieboxEngine.getVideoInterceptor(extractorLink)
@@ -314,7 +318,9 @@ open class AdiFilmSemi : TmdbProvider() {
         val item = com.lagradost.cloudstream3.utils.AppUtils.tryParseJson<LinkData>(data) ?: return false
         return movieboxEngine.resolve(
             listOfNotNull(item.title, item.orgTitle, item.jpTitle) + item.alternativeTitles, item.airedYear ?: item.year, when (item.type) { "movie" -> 1; "tv" -> 2; else -> return false }, item.season, item.episode,
-            subtitleCallback, callback)
+            subtitleCallback, callback,
+            tmdbId = item.id?.toString() ?: return false, imdbId = item.imdbId,
+            overview = item.overview, runtimeMinutes = item.runtimeMinutes, castNames = item.castNames)
     }
 
     data class LinkData(
@@ -340,6 +346,9 @@ open class AdiFilmSemi : TmdbProvider() {
         val isBollywood: Boolean = false,
         val isCartoon: Boolean = false,
         val alternativeTitles: List<String> = emptyList(),
+        val overview: String? = null,
+        val runtimeMinutes: Int? = null,
+        val castNames: List<String> = emptyList(),
     )
 
     data class Data(

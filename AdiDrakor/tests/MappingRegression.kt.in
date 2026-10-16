@@ -154,6 +154,98 @@ fun main() = runBlocking {
         check(streams.single().category==PLAYBACK.AudioCategory.ORIGINAL)
         check(!MATCHER.playbackMetadata(JSONObject(original.toString()).put("subjectId",dubId)).has("lanName"))
     }
+    val target=r.copy(tmdbId="10",imdbId="tt1234567",works=listOf(MATCHER.Work("10","")))
+    fun item(s: MATCHER.Subject=movie)=raw(s)
+    test("sparse public metadata preserves native cast and full synopsis") {
+        val native=JSONObject().put("staffList",org.json.JSONArray().put(JSONObject().put("name","Actor A")))
+            .put("description","Full authoritative movie synopsis")
+        val web=JSONObject().put("staffList",org.json.JSONArray()).put("description","")
+        val merged=MATCHER.mergeMetadata(native,web)
+        check(merged.getJSONArray("staffList").length()==1)
+        check(merged.getString("description")==native.getString("description"))
+    }
+    test("conflicting discovery IDs are never silently overwritten") {
+        val merged=MATCHER.mergeMetadata(JSONObject().put("tmdbId","10"),JSONObject().put("tmdbId","11"))
+        check(MATCHER.identity(target,merged)=="EXTERNAL_ID_CONFLICT")
+        check(MATCHER.identity(target,MATCHER.mergeMetadata(item().put("tmdbId",0),JSONObject().put("tmdbId","10")))=="EXTERNAL_ID_MATCH")
+    }
+    test("explicit external ID conflict rejects same title year") {
+        check(MATCHER.identity(target,item().put("tmdbId","11"))=="EXTERNAL_ID_CONFLICT")
+        check(MATCHER.identity(target,item().put("imdbId","tt7654321"))=="EXTERNAL_ID_CONFLICT")
+        check(MATCHER.identity(target,item().put("tmdbId","10"))=="EXTERNAL_ID_MATCH")
+        check(MATCHER.identity(target,item().put("tmdbId",0))=="TMDB_UNIQUE_WORK")
+    }
+    test("ambiguous TMDB same title year never selects another work by title alone") {
+        val ambiguous=target.copy(works=listOf(MATCHER.Work("10",""),MATCHER.Work("11","")))
+        check(MATCHER.identity(ambiguous,item())=="AMBIGUOUS_TMDB_WORK")
+        check(MATCHER.resolve(ambiguous,{search()},{detail()},{null}).subject==null)
+    }
+    test("primary-title uniqueness never proves a colliding alternative title belongs to the same film") {
+        val req=target.copy(titles=listOf("Example","Shared Alternative"))
+        check(MATCHER.identity(req,item().put("title","Shared Alternative"))=="AMBIGUOUS_TMDB_WORK")
+        check(MATCHER.identity(req,item().put("title","Shared Alternative").put("tmdbId","10"))=="EXTERNAL_ID_MATCH")
+    }
+    test("TMDB identity lookup failure fails closed without corroboration") {
+        check(MATCHER.identity(target.copy(works=null),item())=="TMDB_IDENTITY_UNVERIFIED")
+    }
+    test("plot fingerprint disambiguates two works and rejects the other story") {
+        val correct="astronaut Nora discovers ancient signals beneath frozen Europa while rescuing missing engineer Malik aboard damaged orbital station"
+        val other="musician Elena travels rural villages restoring broken violins alongside retired teacher David during summer festival"
+        val request=target.copy(overview=correct,works=listOf(MATCHER.Work("10",correct),MATCHER.Work("11",other)))
+        check(MATCHER.identity(request,item().put("description",correct))=="PLOT_MATCH")
+        check(MATCHER.identity(request,item().put("description",other))=="AMBIGUOUS_TMDB_WORK")
+    }
+    test("conflicting external ID beats matching synopsis and cast") {
+        val meta=item().put("imdbId","tt7654321").put("description","same synopsis")
+            .put("staffList",org.json.JSONArray().put(JSONObject().put("name","Actor A")).put(JSONObject().put("name","Actor B")))
+        check(MATCHER.identity(target.copy(castNames=listOf("Actor A","Actor B")),meta)=="EXTERNAL_ID_CONFLICT")
+    }
+    test("validated primary source skips slow unused aliases") {
+        var calls=0
+        val got=MATCHER.resolve(r,{q -> calls++;check(q=="Example");search()},{detail()},{null})
+        check(got.subject==movie && calls==1)
+        var retries=0
+        val recovered=MATCHER.resolve(r,{search()},{retries++;if(retries==1) null else detail()},{null})
+        check(recovered.subject==movie && retries==2)
+        var failures=0
+        check(MATCHER.resolve(r.copy(titles=listOf("Example","Alias One","Alias Two")),
+            {search()},{failures++;null},{null}).subject==null)
+        check(failures==2)
+    }
+    test("discovery queries broaden punctuation and franchise only; selected title stays exact") {
+        val q=insidiousRequest.copy(titles=listOf("Spider-Man: Brand New Day"))
+        check(MATCHER.queries(q).contains("spider man brand new day"))
+        check(MATCHER.queries(q).contains("Spider-Man"))
+        check(!MATCHER.matches(q,movie.copy(title="Spider-Man 3",year=2026)))
+        check(MATCHER.matches(q,movie.copy(title="Spiderman Brand New Day",year=2026)))
+    }
+    test("incorrect detail candidate does not hide independently verified correct subject") {
+        val wrong=movie.copy(id="124")
+        val both=catalog(raw(wrong),raw(movie))
+        val got=MATCHER.resolve(r,{both},{id -> if(id=="123") detail() else detail(wrong.copy(year=1999))},{null})
+        check(got.subject==movie)
+    }
+    test("release-year discrepancy requires exact external identity") {
+        val meta=item(movie.copy(year=2021)).put("tmdbId","10")
+        check(MATCHER.resolve(target,{search(movie.copy(year=2021))},{envelope(meta)},{null}).subject?.id=="123")
+        check(MATCHER.resolve(target,{search(movie.copy(year=2021))},{detail(movie.copy(year=2021))},{null}).subject==null)
+    }
+    test("TMDB response parsing preserves two distinct same-title same-year works") {
+        val result=MATCHER.tmdbWorks("""{"results":[{"id":10,"title":"Example","release_date":"2022-01-01"},{"id":11,"title":"Example","release_date":"2022-04-01"},{"id":12,"title":"Example","release_date":"1999-01-01"}]}""",target)
+        check(result?.map { it.id }==listOf("10","11"))
+        check(MATCHER.tmdbWorks("{}",target)==null)
+        check(MATCHER.tmdbWorks("""{"total_pages":2,"results":[{"id":10,"title":"Example","release_date":"2022-01-01"}]}""",target)==null)
+    }
+    test("observed Spider-Man metadata maps to the selected TMDB work without switching film") {
+        val meta=JSONObject(java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-detail.json").readText()).getJSONObject("data")
+        val req=MATCHER.Request(listOf("Spider-Man: Brand New Day"),2026,1,null,null,
+            tmdbId="969681",works=listOf(MATCHER.Work("969681","")))
+        val observed=MATCHER.subject(meta)!!
+        val got=MATCHER.resolve(req,{catalog(meta)},{envelope(meta)},{null})
+        check(got.subject==observed && observed.id=="6026412232966389904")
+        check(got.metadata?.getString("detailPath")=="spider-man-brand-new-day-Aea8ARY1bb7")
+    }
+
     test("invalid Nuxt reference graph and script text are never executed") {
         check(MATCHER.catalogPage("<script id=__NUXT_DATA__ type=application/json>[{\"subjectId\":0,\"title\":0}]</script>").isEmpty())
         check(MATCHER.catalogPage("<script>throw new Error('no')</script>").isEmpty())
@@ -173,6 +265,7 @@ fun main() = runBlocking {
     PlaybackApiFixture.responder={ req ->
         val subject=movie.copy(type=if(tv) 2 else 1)
         when {
+            req.url.host=="api.themoviedb.org" -> response(req,"""{"results":[{"id":1,"title":"Example","name":"Example","release_date":"2022-01-01","first_air_date":"2022-01-01"}]}""")
             req.url.encodedPath.endsWith("ranking-list") -> response(req,"{}",true)
             req.url.encodedPath.endsWith("search/v2") -> response(req,search(subject))
             req.url.encodedPath.endsWith("/get") -> response(req,detail(subject))
@@ -201,6 +294,7 @@ fun main() = runBlocking {
             PlaybackApiFixture.requests.clear()
             PlaybackApiFixture.responder={ req ->
                 when {
+                    req.url.host=="api.themoviedb.org" -> response(req,"""{"results":[{"id":1291595,"title":"Insidious: Out of the Further","release_date":"2026-08-19"}]}""")
                     req.url.host=="moviebox.ph" -> {
                         check(req.header("Authorization")==null)
                         response(req,html)
@@ -220,6 +314,32 @@ fun main() = runBlocking {
             check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
         }
 
+        test("recorded Spider-Man MainAPI verifies work and H5 path without consulting optional aliases") {
+            val html=java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-nuxt.html").readText()
+            PlaybackApiFixture.requests.clear()
+            PlaybackApiFixture.responder={ req ->
+                when {
+                    req.url.host=="api.themoviedb.org" -> response(req,"""{"results":[{"id":969681,"title":"Spider-Man: Brand New Day","release_date":"2026-07-29"}]}""")
+                    req.url.host=="moviebox.ph" -> {
+                        if(req.url.encodedPath.contains("searchResult"))
+                            check(req.url.queryParameter("keyword")=="Spider-Man: Brand New Day")
+                        response(req,html)
+                    }
+                    req.url.encodedPath.endsWith("subject/play") -> {
+                        check(req.url.queryParameter("subjectId")=="6026412232966389904")
+                        check(req.url.queryParameter("detailPath")=="spider-man-brand-new-day-Aea8ARY1bb7")
+                        check(req.url.queryParameter("se")=="0" && req.url.queryParameter("ep")=="0")
+                        response(req,"""{"code":0,"data":{"subjectId":"6026412232966389904","se":0,"ep":0,"streams":[{"id":"s1","url":"$media"}]}}""")
+                    }
+                    else -> response(req,"{\"code\":403}").newBuilder().code(403).build()
+                }
+            }
+            val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
+            val payload="""{"id":969681,"tmdbId":"969681","title":"Spider-Man: Brand New Day","year":2026,"type":"movie","isTvSeries":false,"alternativeTitles":["Spider-Man 3"]}"""
+            check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
+            check(links.single().source=="PROVIDER")
+            check(PlaybackApiFixture.requests.count { it.url.encodedPath.contains("searchResult") }==1)
+        }
     } finally {
         server.stop(0)
         com.lagradost.cloudstream3.app.baseClient.connectionPool.evictAll()

@@ -24,7 +24,7 @@ import java.net.URLEncoder
 import java.net.URI
 
 /** Local port of Moviebox H5 at 4a4d272. No catalog UI, plugin registration or cross-module state. */
-internal class Adicinemax21MovieboxEngine(private val name: String) {
+internal class Adicinemax21MovieboxEngine(private val name: String, private val tmdbApiKey: String? = null) {
     private val mainUrl = "https://api3.aoneroom.com"
     companion object {
         private const val TAG = "Adicinemax21MovieboxEngine"
@@ -638,10 +638,22 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
 
 
     suspend fun resolve(titles: List<String>, year: Int?, type: Int, season: Int?, episode: Int?,
-        subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit,
+        tmdbId: String? = null, imdbId: String? = null, overview: String? = null,
+        runtimeMinutes: Int? = null, castNames: List<String> = emptyList()): Boolean {
         val completed = withTimeoutOrNull(150_000) {
             try {
-                val request = Adicinemax21MovieboxMapping.Request(titles,year,type,season,episode)
+                var request = Adicinemax21MovieboxMapping.Request(titles,year,type,season,episode,
+                    tmdbId,imdbId,overview,runtimeMinutes,castNames)
+                if(tmdbId!=null && tmdbApiKey!=null) {
+                    val kind=if(type==1) "movie" else "tv"
+                    val yearKey=if(type==1) "year" else "first_air_date_year"
+                    val query=URLEncoder.encode(titles.firstOrNull().orEmpty(),"UTF-8")
+                    val url="https://api.themoviedb.org/3/search/$kind?api_key=$tmdbApiKey&query=$query&$yearKey=$year&language=en-US"
+                    val raw=try { app.get(url,timeout=5).takeIf { it.code==200 }?.text }
+                        catch(e: CancellationException) { throw e } catch (_: Exception) { null }
+                    request=request.copy(works=Adicinemax21MovieboxMapping.tmdbWorks(raw,request))
+                }
                 if (!Adicinemax21MovieboxMapping.valid(request)) {
                     Log.d(TAG,"[MAPPING] INSUFFICIENT_TMDB_IDENTITY")
                     return@withTimeoutOrNull false
@@ -672,8 +684,7 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
                         ?: return mobile
                     val identity=Adicinemax21MovieboxMapping.subject(meta)
                     if(identity==null || !Adicinemax21MovieboxMapping.matches(request,identity)) return mobile
-                    val combined=Adicinemax21MovieboxPlayback.metadata(mobile,id)?.let { JSONObject(it.toString()) } ?: JSONObject()
-                    meta.keys().forEach { combined.put(it,meta.get(it)) }
+                    val combined=Adicinemax21MovieboxMapping.mergeMetadata(Adicinemax21MovieboxPlayback.metadata(mobile,id),meta)
                     return JSONObject().put("code",0).put("data",combined).toString()
                 }
                 var publicDiscoveryAttempted=false
@@ -710,7 +721,7 @@ internal class Adicinemax21MovieboxEngine(private val name: String) {
                     Log.d(TAG,"[MAPPING] ${match.reason} type=$type se=$season ep=$episode")
                     return@withTimeoutOrNull false
                 }
-                Log.d(TAG,"[MAPPING] verified subject=${subject.id} type=$type year=${subject.year} detailPath=${match.metadata?.has("detailPath")==true}")
+                Log.d(TAG,"[MAPPING] verified subject=${subject.id} type=$type year=${subject.year} identity=${match.metadata?.let { Adicinemax21MovieboxMapping.identity(request,it) }} detailPath=${match.metadata?.has("detailPath")==true}")
                 val selected=EpData(subject.id,if(type==1) 0 else season!!,if(type==1) 0 else episode!!,type)
                 val context=match.metadata?.takeIf { Adicinemax21MovieboxPlayback.detailPath(it,subject.id).isNotBlank() }
                     ?.let { mapOf(subject.id to Adicinemax21MovieboxMapping.playbackMetadata(it)) }.orEmpty()

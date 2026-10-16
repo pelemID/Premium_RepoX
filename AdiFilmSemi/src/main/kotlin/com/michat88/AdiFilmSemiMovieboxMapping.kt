@@ -9,7 +9,9 @@ import kotlinx.coroutines.CancellationException
 
 /** Verify full subject identity before choosing a canonical original from an explicit dub family. */
 internal object AdiFilmSemiMovieboxMapping {
-    data class Request(val titles: List<String>, val year: Int?, val type: Int, val season: Int?, val episode: Int?)
+    data class Request(val titles: List<String>, val year: Int?, val type: Int, val season: Int?, val episode: Int?,
+        val tmdbId: String? = null, val imdbId: String? = null, val overview: String? = null,
+        val runtimeMinutes: Int? = null, val castNames: List<String> = emptyList(), val works: List<Work>? = null)
     data class Subject(val id: String, val title: String, val year: Int?, val type: Int)
     data class Result(val subject: Subject?, val reason: String, val metadata: JSONObject? = null)
     fun normalize(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
@@ -34,7 +36,7 @@ internal object AdiFilmSemiMovieboxMapping {
     } catch (_: Exception) { emptyList() }
     fun parseSearch(raw: String?): List<Subject> = searchObjects(raw).mapNotNull(::subject)
     private fun titleMatches(r: Request, s: Subject): Boolean {
-        fun exact(value: String)=r.titles.any { normalize(it).isNotEmpty() && normalize(it)==normalize(value) }
+        fun exact(value: String)=r.titles.any { normalize(it).isNotEmpty() && comparable(it)==comparable(value) }
         if(exact(s.title)) return true
         if(r.type!=2 || r.season==null) return false
         // Moviebox displays series ranges such as S1-S3. This is display metadata,
@@ -44,9 +46,98 @@ internal object AdiFilmSemiMovieboxMapping {
         val last=suffix.groupValues[2].toIntOrNull() ?: first
         return r.season in first..last && exact(s.title.substring(0,suffix.range.first))
     }
+    data class Work(val id: String, val overview: String)
+    private fun comparable(value: String): String = normalize(value).replace(" ","")
+    fun tmdbWorks(raw: String?, r: Request): List<Work>? = try {
+        val root=JSONObject(raw ?: "{}")
+        if(!root.has("results") || root.optInt("total_pages",1)>1) null else AdiFilmSemiMovieboxPlayback.objects(root.optJSONArray("results"))
+            .filter { row ->
+                val year=AdiFilmSemiMovieboxPlayback.text(row,if(r.type==1) "release_date" else "first_air_date").take(4).toIntOrNull()
+                year==r.year && listOf("title","original_title","name","original_name").any { key ->
+                    val title=AdiFilmSemiMovieboxPlayback.text(row,key)
+                    title.isNotEmpty() && r.titles.any { comparable(it)==comparable(title) }
+                }
+            }.mapNotNull { row ->
+                AdiFilmSemiMovieboxPlayback.text(row,"id").takeIf { it.matches(Regex("[0-9]+")) }
+                    ?.let { Work(it,AdiFilmSemiMovieboxPlayback.text(row,"overview")) }
+            }.distinctBy { it.id }
+    } catch (_: Exception) { null }
+    fun queries(r: Request): List<String> {
+        val titles=r.titles.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase(Locale.ROOT) }
+        val main=titles.firstOrNull() ?: return emptyList()
+        val prefix=main.substringBefore(':').trim().takeIf { ':' in main && normalize(it).length>=5 }
+        return (titles.take(5)+listOf(normalize(main))+listOfNotNull(prefix))
+            .filter { it.isNotBlank() }.distinctBy { it.lowercase(Locale.ROOT) }.take(8)
+    }
+    private val stopWords=setOf("the","and","with","from","that","this","they","their","into","after","before",
+        "when","where","who","what","which","while","until","through","than","then","have","has","had","are",
+        "was","were","will","would","could","should","his","her","him","she","for","not","but","its","you",
+        "your","our","out","can","one","new","all","only","own","about","against","must","being","been","life","time","world","city","family","friends","people","young","man","woman","find","finds","begins","old","story")
+    private fun words(s: String): Set<String> = normalize(s).split(' ').filter { it.length>=3 && it !in stopWords }.toSet()
+    fun plotScore(a: String, b: String): Pair<Int,Double> {
+        val left=words(a);val right=words(b)
+        val shared=left.intersect(right).size
+        return shared to if(minOf(left.size,right.size)<4) 0.0 else shared.toDouble()/minOf(left.size,right.size)
+    }
+    fun mergeMetadata(native: JSONObject?, web: JSONObject): JSONObject {
+        val merged=native?.let { JSONObject(it.toString()) } ?: JSONObject()
+        val ids=setOf("imdbId","imdb_id","tmdbId","tmdb_id")
+        web.keys().forEach { key ->
+            val value=web.get(key)
+            val empty=value==JSONObject.NULL || (value is String && value.isBlank()) ||
+                (value is JSONArray && value.length()==0) || (value is JSONObject && value.length()==0) ||
+                (key in setOf("duration","durationSeconds") && value.toString()=="0")
+            val prior=merged.optString(key)
+            val incoming=value.toString()
+            val pattern=if(key.startsWith("imdb")) Regex("tt[0-9]{5,12}") else Regex("[1-9][0-9]*")
+            if(key in ids && pattern.matches(prior) && pattern.matches(incoming) && prior!=incoming)
+                merged.put("identityConflict",true)
+            val shorter=key=="description" && merged.optString(key).length>value.toString().length
+            if(!shorter && (!empty || !merged.has(key))) merged.put(key,value)
+        }
+        return merged
+    }
+    fun identity(r: Request, meta: JSONObject): String {
+        if(meta.optBoolean("identityConflict",false)) return "EXTERNAL_ID_CONFLICT"
+        fun external(vararg keys: String): Set<String> = (listOf(meta)+listOfNotNull(
+            meta.optJSONObject("externalIds"),meta.optJSONObject("external_ids"))).flatMap { item ->
+            keys.map { AdiFilmSemiMovieboxPlayback.text(item,it) }.filter { it.isNotBlank() }
+        }.toSet()
+        val tmdb=external("tmdbId","tmdb_id").filter { it.matches(Regex("[1-9][0-9]*")) }.toSet()
+        val imdb=external("imdbId","imdb_id").filter { it.matches(Regex("tt[0-9]{5,12}")) }.toSet()
+        if(r.tmdbId!=null && tmdb.any { it!=r.tmdbId }) return "EXTERNAL_ID_CONFLICT"
+        if(r.imdbId!=null && imdb.any { it!=r.imdbId }) return "EXTERNAL_ID_CONFLICT"
+        if((r.tmdbId!=null && r.tmdbId in tmdb) || (r.imdbId!=null && r.imdbId in imdb)) return "EXTERNAL_ID_MATCH"
+        // Only the real MainAPI supplies a selected TMDB ID. Unit schema fixtures may omit it.
+        if(r.tmdbId==null) return "LEGACY_TITLE_YEAR"
+        val works=r.works
+        val primary=subject(meta)?.let { titleMatches(r.copy(titles=r.titles.take(1)),it) }==true
+        if(primary && works!=null && works.size==1 && works.single().id==r.tmdbId) return "TMDB_UNIQUE_WORK"
+        val names=AdiFilmSemiMovieboxPlayback.objects(meta.optJSONArray("staffList"))
+            .map { normalize(AdiFilmSemiMovieboxPlayback.text(it,"name")) }.filter { it.isNotBlank() }.toSet()
+        if(r.castNames.map(::normalize).filter { it.isNotBlank() }.toSet().intersect(names).size>=2)
+            return "CAST_MATCH"
+        val description=AdiFilmSemiMovieboxPlayback.text(meta,"description")
+        val (shared,score)=plotScore(r.overview.orEmpty(),description)
+        val other=works.orEmpty().filter { it.id!=r.tmdbId }.maxOfOrNull {
+            plotScore(it.overview,description).second
+        } ?: 0.0
+        val seconds=meta.optInt("durationSeconds",0).takeIf { it>0 }
+            ?: AdiFilmSemiMovieboxPlayback.text(meta,"duration").toIntOrNull()?.takeIf { it>0 }
+        val runtime=seconds?.let { it/60 }
+        val durationAgrees=runtime!=null && r.runtimeMinutes!=null &&
+            kotlin.math.abs(runtime-r.runtimeMinutes)<=maxOf(8,r.runtimeMinutes/10)
+        val plotAgrees=(shared>=8 && score>=0.5) || (durationAgrees && shared>=4 && score>=0.25)
+        if(plotAgrees && score>=other+0.15) return "PLOT_MATCH"
+        return if(works==null) "TMDB_IDENTITY_UNVERIFIED" else "AMBIGUOUS_TMDB_WORK"
+    }
+    private fun trusted(r: Request, meta: JSONObject): Boolean = identity(r,meta) in setOf(
+        "EXTERNAL_ID_MATCH","TMDB_UNIQUE_WORK","CAST_MATCH","PLOT_MATCH","LEGACY_TITLE_YEAR")
+
     fun matches(r: Request, s: Subject): Boolean = valid(r) && s.type == r.type && s.year == r.year && titleMatches(r,s)
     private fun potential(r: Request, s: Subject): Boolean =
-        (s.type !in 1..2 || s.type == r.type) && (s.year == null || s.year == r.year) && titleMatches(r,s)
+        (s.type !in 1..2 || s.type == r.type) && (s.year == null || s.year == r.year ||
+            (r.tmdbId!=null && r.year!=null && kotlin.math.abs(s.year-r.year)<=1)) && titleMatches(r,s)
     fun choose(r: Request, candidates: List<Subject>): Result {
         if (!valid(r)) return Result(null,"INSUFFICIENT_TMDB_IDENTITY")
         val matches = candidates.filter { matches(r,it) }.distinctBy { it.id }
@@ -71,7 +162,8 @@ internal object AdiFilmSemiMovieboxMapping {
             val script=Jsoup.parse(html).selectFirst("script#__NUXT_DATA__[type=application/json]")
             val table=JSONArray(script?.data() ?: "[]")
             val keys=setOf("subjectId","title","subjectType","releaseDate","detailPath","detailUrl",
-                "dubs","original","lanName","lanCode","lan","language")
+                "dubs","original","lanName","lanCode","lan","language","description","duration","durationSeconds",
+                "staffList","name","imdbId","imdb_id","tmdbId","tmdb_id","externalIds","external_ids")
             fun ref(index: Any?, depth: Int): Any? {
                 if(depth>8 || index !is Number) return null
                 val i=index.toInt()
@@ -122,53 +214,70 @@ internal object AdiFilmSemiMovieboxMapping {
         if (!valid(r)) return Result(null,"INSUFFICIENT_TMDB_IDENTITY")
         suspend fun safe(read: suspend () -> String?): String? = try { read() }
             catch(e: CancellationException) { throw e } catch (_: Exception) { null }
-        val candidates = mutableListOf<Subject>()
+        val candidates=linkedMapOf<String,Subject>()
+        val verified=linkedMapOf<String,Pair<Subject,JSONObject>>()
+        val rejected=mutableSetOf<String>()
+        val attempts=mutableMapOf<String,Int>()
         var successfulSearch=false
         var lastError="SEARCH_API_FAILED"
-        for (title in r.titles.filter { normalize(it).isNotEmpty() }.distinctBy(::normalize).take(4)) {
-            val raw=safe { search(title) } ?: continue
+        suspend fun verify(id: String): Pair<Subject,JSONObject>? {
+            verified[id]?.let { return it }
+            val count=attempts[id] ?: 0
+            if(count>=2) return null
+            attempts[id]=count+1
+            val raw=safe { detail(id) } ?: run { lastError="SUBJECT_DETAIL_UNAVAILABLE";return null }
+            val meta=AdiFilmSemiMovieboxPlayback.metadata(raw,id) ?: run { lastError="SUBJECT_DETAIL_IDENTITY_MISMATCH";return null }
+            val s=subject(meta) ?: return null
+            val proof=identity(r,meta)
+            val sameWork=matches(r,s) || (proof=="EXTERNAL_ID_MATCH" && matches(r,s.copy(year=r.year)))
+            if(s.id!=id || !sameWork || !trusted(r,meta)) {
+                rejected+=id
+                lastError=if(s.id!=id || !sameWork) "SUBJECT_DETAIL_IDENTITY_MISMATCH" else proof
+                return null
+            }
+            return (s to meta).also { verified[id]=it }
+        }
+        fun original(meta: JSONObject): String? = AdiFilmSemiMovieboxPlayback.objects(meta.optJSONArray("dubs"))
+            .filter { it.opt("original")==true }.map { AdiFilmSemiMovieboxPlayback.text(it,"subjectId") }
+            .filter { it.matches(Regex("[0-9]+")) }.distinct().singleOrNull()
+        suspend fun select(): Result? {
+            val possible=candidates.values.filter { it.id !in rejected }
+            if(possible.isEmpty()) return null
+            for(candidate in possible.take(20)) verify(candidate.id)
+            val originals=verified.values.mapNotNull { original(it.second) }.distinct()
+            for(id in originals) verify(id)
+            val remaining=possible.filter { it.id !in rejected }
+            val families=verified.values.filter { (s,meta) -> original(meta)==s.id }.filter { (_,meta) ->
+                val ids=AdiFilmSemiMovieboxPlayback.objects(meta.optJSONArray("dubs")).map { AdiFilmSemiMovieboxPlayback.text(it,"subjectId") }.toSet()
+                remaining.all { it.id in ids } && verified.keys.all { it in ids }
+            }
+            val chosen=when {
+                families.size==1 -> families.single()
+                families.size>1 -> { lastError="AMBIGUOUS_SUBJECT";return null }
+                verified.size==1 && remaining.size==1 -> verified.values.single().takeIf { (s,meta) ->
+                    val orig=original(meta);orig==null || orig==s.id
+                } ?: run { lastError="ORIGINAL_SUBJECT_NOT_VERIFIED";return null }
+                else -> { lastError=if(verified.isEmpty()) lastError else "AMBIGUOUS_SUBJECT";return null }
+            }
+            val (subject,meta)=chosen
+            if(r.type==2 && !episode(safe { seasons(subject.id) },subject.id,r.season!!,r.episode!!)) {
+                lastError="SEASON_OR_EPISODE_UNAVAILABLE";return null
+            }
+            return Result(subject,"MATCH",meta)
+        }
+        for(query in queries(r)) {
+            val raw=safe { search(query) } ?: continue
             val response=try { JSONObject(raw) } catch (_: Exception) { lastError="SEARCH_API_INVALID";continue }
             if(response.optInt("code",-1)!=0) { lastError="SEARCH_API_REJECTED";continue }
             successfulSearch=true
-            candidates += parseSearch(raw)
+            for(candidate in parseSearch(raw).filter { potential(r,it) }) candidates[candidate.id]=candidate
+            // Verify the full candidate set for this query; never pick its first result.
+            // A trusted exact work should not wait for unrelated optional aliases to time out.
+            select()?.let { return it }
         }
         if(!successfulSearch) return Result(null,lastError)
-        val possible=candidates.filter { potential(r,it) }.distinctBy { it.id }.take(20)
-        if(possible.isEmpty()) return Result(null,"SUBJECT_NOT_FOUND_OR_IDENTITY_MISMATCH")
-        val verified=linkedMapOf<String,Pair<Subject,JSONObject>>()
-        val readIds=mutableSetOf<String>()
-        suspend fun verify(id: String): Pair<Subject,JSONObject>? {
-            verified[id]?.let { return it }
-            if(!readIds.add(id)) return null
-            val meta=AdiFilmSemiMovieboxPlayback.metadata(safe { detail(id) },id) ?: return null
-            val s=subject(meta) ?: return null
-            if(s.id!=id || !matches(r,s)) return null
-            return (s to meta).also { verified[id]=it }
-        }
-        // Sparse search rows are discovery only; authoritative same-ID detail supplies year/type.
-        for(candidate in possible) verify(candidate.id)
-        if(verified.isEmpty()) return Result(null,"SUBJECT_DETAIL_IDENTITY_MISMATCH")
-        fun original(meta: JSONObject): String? = AdiFilmSemiMovieboxPlayback.objects(meta.optJSONArray("dubs"))
-            .filter { it.opt("original") == true }.map { AdiFilmSemiMovieboxPlayback.text(it,"subjectId") }
-            .filter { it.matches(Regex("[0-9]+")) }.distinct().singleOrNull()
-        val originals=verified.values.mapNotNull { original(it.second) }.distinct()
-        for(id in originals) verify(id)
-        // Collapse duplicate editions only through server-declared membership and original=true.
-        val families=verified.values.filter { (s,meta) -> original(meta)==s.id }.filter { (_,meta) ->
-            val ids=AdiFilmSemiMovieboxPlayback.objects(meta.optJSONArray("dubs")).map { AdiFilmSemiMovieboxPlayback.text(it,"subjectId") }.toSet()
-            possible.all { it.id in ids } && verified.keys.all { it in ids }
-        }
-        val chosen=when {
-            families.size==1 -> families.single()
-            families.size>1 -> return Result(null,"AMBIGUOUS_SUBJECT")
-            verified.size==1 && possible.size==1 -> verified.values.single().takeIf { (s,meta) ->
-                val orig=original(meta);orig==null || orig==s.id
-            } ?: return Result(null,"ORIGINAL_SUBJECT_NOT_VERIFIED")
-            else -> return Result(null,"AMBIGUOUS_SUBJECT")
-        }
-        val (subject,meta)=chosen
-        if(r.type==2 && !episode(safe { seasons(subject.id) },subject.id,r.season!!,r.episode!!))
-            return Result(null,"SEASON_OR_EPISODE_UNAVAILABLE")
-        return Result(subject,"MATCH",meta)
+        if(candidates.isEmpty()) return Result(null,"SUBJECT_NOT_FOUND_OR_IDENTITY_MISMATCH")
+        return Result(null,lastError)
     }
+
 }
