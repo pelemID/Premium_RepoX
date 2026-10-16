@@ -233,7 +233,19 @@ open class ByseSXLocal : ExtractorApi() {
         val playbackApiUrl = "$embedBase/api/videos/$embedCode/embed/playback"
         // Byse's API expects the original Byse embed URL as its parent (not the movie page).
         val playbackHeaders = mapOf("accept" to "*/*", "referer" to embedFrameUrl, "x-embed-parent" to url)
-        val playbackResponse = app.get(playbackApiUrl, headers = playbackHeaders)
+        var playbackResponse = app.get(playbackApiUrl, headers = playbackHeaders)
+        if (playbackResponse.code == 405) {
+            // Current Byse's player also sends JSON POST to this same endpoint.
+            // Negotiate the method only on 405; keep older GET servers unchanged.
+            val allow = playbackResponse.headers["Allow"]
+            playbackResponse.body.close()
+            if (allow != null && allow.split(',').none { it.trim().equals("POST", true) }) {
+                Log.w(name, "Playback API HTTP 405 (POST not allowed)")
+                return
+            }
+            playbackResponse = app.post(playbackApiUrl, headers = playbackHeaders,
+                json = emptyMap<String, String>())
+        }
         if (!playbackResponse.isSuccessful) {
             Log.w(name, "Playback API HTTP ${playbackResponse.code}")
             playbackResponse.body.close(); return

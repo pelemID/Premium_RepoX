@@ -99,7 +99,7 @@ internal object JavHeyPlayers {
                         // hls2/3/4 are transport alternatives, not resolution labels. The
                         // browser explicitly declares all of them HLS, including .txt URLs.
                         if (!Regex("""\bfile\s*:\s*links\.hls[234]""").containsMatchIn(script)) continue
-                        val raw = Regex("""\b(?:var|let|const)\s+links\s*=\s*(\{.*?})\s*;""",
+                        val raw = Regex("""\b(?:var|let|const)\s+links\s*=\s*(\{.*?\})\s*;""",
                             RegexOption.DOT_MATCHES_ALL).find(script)?.groupValues?.get(1) ?: continue
                         val links = tryParseJson<Map<String, String?>>(raw) ?: continue
                         for (key in listOf("hls4", "hls3", "hls2")) {
