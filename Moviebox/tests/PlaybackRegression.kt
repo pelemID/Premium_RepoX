@@ -1,0 +1,100 @@
+package com.Moviebox
+
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+
+/** Synthetic, sanitized schema/transport fixtures. These do NOT prove MovieBox server/device playback. */
+fun main() = runBlocking {
+    var passed = 0
+    suspend fun test(name: String, block: suspend () -> Unit) {
+        block(); passed++; println("PASS $name")
+    }
+    val url = "https://cdn.example.test/title/index.mpd?Signature=a%2Bb&Policy=p%3D"
+    fun stream(u: String = url, format: String = "DASH") = MovieboxPlayback.Stream(u,format,"s1",1080,"h264","test-cookie","X-MB-Token","English","H5")
+    val video = byteArrayOf(0,0,0,24) + "ftypisom".toByteArray() + ByteArray(512)
+    fun sample(u: String, body: String, code: Int = 200) = MovieboxPlayback.Sample(u,code,"text/plain",body.toByteArray())
+    fun media(u: String) = MovieboxPlayback.Sample(u,206,"application/octet-stream",video)
+    suspend fun validate(body: String, responses: Map<String,MovieboxPlayback.Sample> = emptyMap(), u: String = url): MovieboxPlayback.Validated? {
+        return MovieboxPlayback.validate(stream(u),emptyMap()) { target,_,_ ->
+            if(target == u) sample(u,body) else responses[target]
+        }
+    }
+    test("v2 native movie 0/0 and signed query preserved") {
+        val r = MovieboxPlayback.parse("""{"code":0,"data":{"streams":[{"id":"s1","url":"$url","resolutions":"360,720,1080","codecName":"h264"}]}}""","V2","123",0,0)
+        check(r.single().url == url && r.single().quality == 1080)
+    }
+    test("H5 DASH HLS and direct groups with audio and signHeaderKey") {
+        val raw = """{"code":0,"data":{"dash":[{"url":"https://cdn.example.test/a.mpd","signCookie":"cookie","signHeaderKey":"X-Stream-Token"}],"hls":[{"url":"https://cdn.example.test/a.m3u8"}],"streams":[{"url":"https://cdn.example.test/a.mp4"}]}}"""
+        val r = MovieboxPlayback.parse(raw,"H5","123",1,1,"Indonesia")
+        check(r.size == 3 && r[0].format == "DASH" && r[1].format == "HLS" && r[2].format == "")
+        check(r[0].audio == "Indonesia" && r[0].signHeader == "X-Stream-Token")
+    }
+    test("empty data and API error rejected") {
+        check(MovieboxPlayback.parse("""{"code":0,"data":{}}""","V2","123",0,0).isEmpty())
+        check(MovieboxPlayback.parse("""{"code":401,"data":{"streams":[{"url":"$url"}]}}""","V2","123",0,0).isEmpty())
+    }
+    test("series season 2 episode 4 cannot accept other episode or unindexed detail resource") {
+        val raw = """{"data":{"resourceDetectors":[{"resourceId":"r1","resolutionList":[{"resourceLink":"https://cdn.example.test/wrong.mp4","se":1,"ep":1},{"resourceLink":"https://cdn.example.test/right.mp4","se":2,"ep":4,"resolution":720},{"resourceLink":"https://cdn.example.test/unindexed.mp4"}]}]}}"""
+        val r = MovieboxPlayback.parse(raw,"Native","123",2,4)
+        check(r.size == 1 && r[0].url.endsWith("right.mp4") && r[0].id == "r1")
+    }
+    test("wrong subject and wrong top-level episode rejected") {
+        for (extra in listOf("\"subjectId\":\"124\",", "\"se\":1,\"ep\":2,")) {
+            check(MovieboxPlayback.parse("""{"data":{$extra"streams":[{"url":"$url"}]}}""","V2","123",2,4).isEmpty())
+        }
+    }
+    test("HTML notice response cannot pass by URL or HTTP 200") {
+        check(validate("<!DOCTYPE html><html>upgrade</html>") == null)
+        check(MovieboxPlayback.format(stream(),sample(url,"{\"error\":\"expired\"}")) == null)
+    }
+    test("known notice URL rejected") {
+        check(MovieboxPlayback.notice("https://cdn.example.test/notice.mp4"))
+        check(MovieboxPlayback.format(stream(),media("https://cdn.example.test/upgrade-notice.mp4")) == null)
+    }
+    test("direct MP4 sniffed without relying on extension or format label") {
+        check(MovieboxPlayback.format(stream(format="HLS"),media(url)) == MovieboxPlayback.Format.VIDEO)
+    }
+    test("signed cookie scope same directory, no cross-host/scheme/path leakage") {
+        val h = MovieboxPlayback.mediaHeaders(stream(),"https://web.example.test","https://web.example.test/movies/title",MovieboxPlayback.WEB_UA)
+        check(h["Cookie"] == "test-cookie" && h["X-MB-Token"] == "test-cookie")
+        check(!h.containsKey("Authorization"))
+        check(MovieboxPlayback.scopeHeaders(h,url,"https://cdn.example.test/title/video/1.m4s")["Cookie"] == "test-cookie")
+        for (other in listOf("https://other.example.test/title/1.m4s","https://cdn.example.test/another/1.m4s","http://cdn.example.test/title/1.m4s")) {
+            check(MovieboxPlayback.scopeHeaders(h,url,other).keys.none { it == "Cookie" || it == "X-MB-Token" })
+        }
+    }
+    test("malicious signHeaderKey cannot override authorization or inject CRLF") {
+        check(!MovieboxPlayback.mediaHeaders(stream().copy(signHeader="Authorization"),"o","r","ua").containsKey("Authorization"))
+        check(!MovieboxPlayback.mediaHeaders(stream().copy(cookie="a\r\nb"),"o","r","ua").containsKey("Cookie"))
+    }
+    test("dedup preserves differing signed queries and audio, ignores fragments") {
+        check(MovieboxPlayback.key(stream()) == MovieboxPlayback.key(stream(url+"#fragment")))
+        check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream(url+"&token=other")))
+        check(MovieboxPlayback.key(stream()) != MovieboxPlayback.key(stream().copy(audio="Indonesia")))
+    }
+    val mpd = """<?xml version="1.0"?><MPD><Period><AdaptationSet mimeType="video/mp4"><Representation id="v1" bandwidth="1000" codecs="avc1.42"><SegmentTemplate initialization="init-${'$'}RepresentationID${'$'}.mp4" media="v-${'$'}Number%05d${'$'}.m4s" startNumber="7"/></Representation></AdaptationSet><AdaptationSet mimeType="audio/mp4"><Representation id="a1"><SegmentTemplate initialization="audio-init.mp4" media="audio-${'$'}Time${'$'}.m4s"><SegmentTimeline><S t="42" d="10"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"""
+    val mediaUrls = listOf("init-v1.mp4","v-00007.m4s","audio-init.mp4","audio-42.m4s").associate { val u="https://cdn.example.test/title/$it"; u to media(u) }
+    test("DASH manifest validates initialization video AND audio segments") { check(validate(mpd,mediaUrls)?.format == MovieboxPlayback.Format.DASH) }
+    test("DASH audio segment 403 invalidates source") { check(validate(mpd,mediaUrls - "https://cdn.example.test/title/audio-42.m4s") == null) }
+    test("DRM MPD rejected without attempting a bypass") { check(validate(mpd.replace("<Period>","<Period><ContentProtection schemeIdUri=\"urn:uuid:edef8ba9\"/>"),mediaUrls) == null) }
+    test("DASH inherited template and relative BaseURL") {
+        val body = """<MPD><BaseURL>media/</BaseURL><Period><AdaptationSet mimeType="video/mp4"><SegmentTemplate media="v.m4s"/><Representation id="v"/></AdaptationSet></Period></MPD>"""
+        val u="https://cdn.example.test/title/media/v.m4s"
+        check(validate(body,mapOf(u to media(u))) != null)
+    }
+    test("HLS master validates variant and its media segment") {
+        val u="https://cdn.example.test/title/master.m3u8";val child="https://cdn.example.test/title/720/index.m3u8";val segment="https://cdn.example.test/title/720/1.ts"
+        val ts=ByteArray(376).apply { this[0]=0x47;this[188]=0x47 }
+        check(validate("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n720/index.m3u8\n",mapOf(child to sample(child,"#EXTM3U\n#EXTINF:5,\n1.ts\n"),segment to MovieboxPlayback.Sample(segment,206,"video/mp2t",ts)),u)?.format == MovieboxPlayback.Format.HLS)
+    }
+    test("HLS master HTTP 200 but expired variant fails") {
+        val u="https://cdn.example.test/title/master.m3u8";val child="https://cdn.example.test/title/v.m3u8"
+        check(validate("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nv.m3u8\n",mapOf(child to sample(child,"expired",403)),u) == null)
+    }
+    test("subtitle extCaptions language fallbacks preserve signed URLs") {
+        val r=MovieboxPlayback.captionEntries("""{"data":{"extCaptions":[{"lanName":"Indonesia","url":"https://subs.example.test/a.srt?Signature=a%2Bb"},{"language":"English","url":"https://subs.example.test/b.vtt"}]}}""")
+        check(r[0].first == "Indonesia" && r[0].second.endsWith("a%2Bb") && r[1].first == "English")
+    }
+    test("timeout transport returns no valid link") { check(MovieboxPlayback.validate(stream(),emptyMap()) { _,_,_ -> null } == null) }
+    println("REGRESSION $passed PASS; server/device playback NOT_TESTED")
+}
