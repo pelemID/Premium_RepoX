@@ -1382,7 +1382,7 @@ class MovieBoxProvider : MainAPI() {
         for ((subject,audio,initialDetail) in orderedSubjects) {
             val meta = if (subject == selected.subjectId) initialDetail else metadata(subject)
             val detail = meta ?: initialDetail ?: JSONObject()
-            val path = MovieboxPlayback.detailPath(detail)
+            val path = MovieboxPlayback.detailPath(detail,subject)
             Log.d(TAG,"[PLAYBACK-H5] subject=$subject metadata=${meta != null} detailPathAvailable=${path.isNotBlank()} se=$se ep=$ep")
             val encodedPath = URLEncoder.encode(path,"UTF-8")
             val webDetail = MovieboxPlayback.text(detail,"detailUrl")

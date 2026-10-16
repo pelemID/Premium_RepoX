@@ -101,9 +101,20 @@ internal object MovieboxPlayback {
             (it.has("subjectId") || it.has("detailPath") || it.has("detailUrl") || it.has("dubs")) }
     } catch (_: Exception) { null }
 
-    fun detailPath(detail: JSONObject): String {
+    fun detailPath(detail: JSONObject, subject: String = text(detail,"subjectId")): String {
         // Prefer the explicit API path over a legacy/redirect detail URL.
-        val value = text(detail,"detailPath").ifBlank { text(detail,"detailUrl") }
+        val value = text(detail,"detailPath").ifBlank { text(detail,"detailUrl") }.ifBlank {
+            // Verified 2026-10-16 from the owner's server-issued Share redirects:
+            // v.moviebox.ph/4qq9KlyIys8 and v.moviebox.ph/kW2VHLAW2ia.
+            // Mobile metadata has an empty detailUrl for these exact subjects. Do not
+            // infer slugs from titles, replace existing paths, or map another edition.
+            if (text(detail,"subjectId").let { it.isNotBlank() && it != subject }) ""
+            else when (subject) {
+                "3620534210064175096" -> "reacher-e1nw56h5sj4"
+                "4149489342181954296" -> "reacher-indonesian-WjrjjPIHwW4"
+                else -> ""
+            }
+        }
         return try { URI(value).path.orEmpty().trimEnd('/').substringAfterLast('/') }
         catch (_: Exception) { value.substringBefore('?').trimEnd('/').substringAfterLast('/') }
     }

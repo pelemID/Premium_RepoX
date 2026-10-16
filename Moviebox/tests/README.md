@@ -164,3 +164,16 @@ and bounded media validation. V2 resource zeros are not evidence of absent episo
 V3 phone result: all ten tested native/resource candidate contexts share one 824,720-byte,
 22.708-second MP4. The media check rejected it; no native/resource production adapter is added.
 See the audit's V3 follow-up and real sanitized fixture. Metadata availability is not playback.
+
+## Reacher version 16: verified Share context
+
+The new Share redirects supply exact original/Indonesian detail paths. Controlled real H5
+requests show the missing title path in Referer causes empty sources; correct query path alone
+is insufficient. Version 16 uses those two server-verified paths only when mobile detail
+metadata is blank, preserving explicit paths and every other subject's behavior. No native/v2
+source, header/validator change or audio/subtitle change is introduced.
+
+32 schema/media regressions, 23 provider/local HTTP integrations and real CloudStream SDK
+production compilation PASS. Real H5 API candidates are restored for S1E1/S1E2. CDN 429/timeouts
+blocked live media validation here; plugin Android playback remains NOT_TESTED. See the audit
+and sanitized `diagnostics/reacher_share_evidence_20261016.json`.

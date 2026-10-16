@@ -283,6 +283,56 @@ fun main() = runBlocking {
                 check(mediaRequests.isEmpty())
             }
         }
+        test("Reacher blank detailUrl is repaired for original and server-declared Indonesian exact episodes") {
+            val original="3620534210064175096";val ind="4149489342181954296"
+            val paths=mapOf(original to "reacher-e1nw56h5sj4",ind to "reacher-indonesian-WjrjjPIHwW4")
+            PlaybackApiFixture.responder = { r ->
+                val sid=r.url.queryParameter("subjectId").orEmpty()
+                when {
+                    r.url.encodedPath.endsWith("subject-api/get") -> response(r,body="""{"code":0,"data":{"subjectId":"$sid","detailUrl":"","dubs":[{"subjectId":"$original","lanName":"Original Audio","original":true},{"subjectId":"$ind","lanName":"Indonesia"}]}}""")
+                    r.url.encodedPath.endsWith("subject/play") -> {
+                        val path=paths[sid]
+                        if(path!=null && r.url.queryParameter("detailPath")==path &&
+                            r.header("Referer").orEmpty().contains("/movies/$path?"))
+                            response(r,body=json("reacher-$sid-${r.url.queryParameter("ep")}.mp4"))
+                        else response(r,body="""{"code":0,"data":{"streams":[],"hasResource":false}}""")
+                    }
+                    else -> response(r,404)
+                }
+            }
+            for(ep in listOf(1,2)) {
+                PlaybackApiFixture.requests.clear()
+                val (ok,links,_)=load(1,ep,original)
+                check(ok && links.size==2)
+                check(links.any { it.name.startsWith("MovieBox • Asli") })
+                check(links.any { it.name.startsWith("MovieBox • Indonesia") })
+                check(links.all { it.url.endsWith("-$ep.mp4") })
+                val requests=PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("subject/play") }
+                check(requests.size==2 && requests.map { it.url.queryParameter("subjectId") }.toSet()==paths.keys)
+                check(requests.all { it.url.queryParameter("se")=="1" && it.url.queryParameter("ep")==ep.toString() })
+            }
+        }
+        test("Reacher selected identity retains Share context when all metadata endpoints fail") {
+            val ind="4149489342181954296";val path="reacher-indonesian-WjrjjPIHwW4"
+            PlaybackApiFixture.responder = { r ->
+                if(r.url.encodedPath.endsWith("subject/play") && r.url.queryParameter("subjectId")==ind &&
+                    r.url.queryParameter("detailPath")==path) response(r,body=json("reacher-ind.mp4"))
+                else response(r,403)
+            }
+            val (ok,links,_)=load(1,1,ind);check(ok && links.size==1)
+            check(PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("subject/play") }.all {
+                it.url.queryParameter("subjectId")==ind && it.url.queryParameter("se")=="1" && it.url.queryParameter("ep")=="1"
+            })
+        }
+        test("unrelated subjects keep existing blank-path H5 behavior") {
+            PlaybackApiFixture.responder = { r ->
+                if(r.url.encodedPath.endsWith("subject/play")) {
+                    check(r.url.queryParameter("detailPath")=="")
+                    response(r,body=json("unrelated.mp4"))
+                } else response(r,404)
+            }
+            val (ok,links,_)=load(1,1,"123");check(ok && links.single().url.endsWith("unrelated.mp4"))
+        }
         println("INTEGRATION $count PASS; synthetic API/local HTTP, MovieBox device playback NOT_TESTED")
     } finally {
         server.stop(0)

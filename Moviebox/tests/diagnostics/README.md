@@ -1,5 +1,11 @@
 # Reacher diagnostic kit V3 (tanpa root)
 
+**Update berikutnya:** video `585430.mp4` dan dua Share membuktikan konteks judul H5 yang
+hilang. Perbaikan produksi versi 16 kini memulihkan path/Referer hanya untuk dua subject
+Reacher. Kit V3 tidak perlu diulang untuk memeriksa perbaikan ini; uji langsung plugin versi
+16. Detail dan batas verifikasi ada di `../REACHER_APK_CONTRACT.md` dan fixture
+`reacher_share_evidence_20261016.json`. Bagian di bawah menyimpan riwayat kit sebelumnya.
+
 V3 memeriksa kandidat MP4 yang benar-benar dikembalikan untuk Reacher, **bukan patch
 playback**. Plugin produksi tetap versi 15. Tidak memasang APK Mod, membaca data privat
 aplikasi, menangkap HTTPS aplikasi lain, memakai akun lain, mengubah region/TLS, mengekspor

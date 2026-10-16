@@ -1,9 +1,9 @@
 # Reacher: APK contract audit and unresolved identity (2026-10-16)
 
 Baseline main: `9d33848994275635a0e12acf0d81253f4fe927be`, plugin 15.
-Scope: investigation and a separate diagnostic kit. **No production Kotlin, plugin version,
-audio whitelist, media headers/validator, subtitle, H5 domains or other provider is changed.**
-No Reacher playback recovery is claimed.
+Initial scope: investigation and a separate diagnostic kit. The later **Recovery implementation**
+section records the version 16 Reacher-only H5 context fix. Earlier findings below are retained
+as history. Live plugin device playback is still not claimed.
 
 ## Artifacts and evidence limits
 
@@ -307,3 +307,82 @@ Production playback recovery remains BLOCKED; no speculative provider patch or n
 shipped. Only sanitized evidence, its regression tests and the identity matrix/audit change.
 Plugin version remains 15; packaged Kotlin, H5 sources, audio whitelist, subtitles and all other
 providers remain byte-for-byte unchanged. This is an investigation result, not a playback fix.
+
+## Recovery implementation: server Share context restores H5 resources
+
+MAIN_BEFORE: `466d5db7bb49593aa7f15a6513ee66135c1d980e`. Production version: **16**.
+This later evidence supersedes the earlier conclusion that no production patch was justified.
+The previous native/resource short replacement remains rejected; it is not re-enabled.
+
+New owner video `585430.mp4` (84.136678 seconds, SHA-256
+`588e5463009586ef80710a6eb2ac20a30d20c75c891cf21352a8ddd33f835c4b`) visibly shows moving
+Reacher scenes under original and Indonesian selections. Around 80 seconds the player displays
+`Reacher S01 E01`, position `17:59`, duration `55:45`, and `1080P`. This is evidence of playback
+in the recorded MovieBox application, not plugin playback or a full 55-minute viewing test.
+The app's package/version and unmodified official origin are not visible and are not asserted.
+
+The supplied public Share URLs return server-issued HTTP 301 locations on Android browser UA:
+
+| Share | Exact subjectId | Server detail path |
+| --- | --- | --- |
+| https://v.moviebox.ph/kW2VHLAW2ia | 4149489342181954296 | reacher-indonesian-WjrjjPIHwW4 |
+| https://v.moviebox.ph/4qq9KlyIys8 | 3620534210064175096 | reacher-e1nw56h5sj4 |
+
+Only id/path/host are retained. Referral uid and tracking query values were discarded.
+Desktop following redirects reaches download-app and loses this identity context; the first
+301 location supplies the exact server mapping. No slug was guessed from a title, and no
+alternate subject or episode was selected.
+
+### Controlled HTTP result and root cause
+
+Existing production H5 UA, x-client-info, request language, host and episode were preserved.
+Only the Share-derived title context was varied on the official H5 host for original S1E1:
+
+| detailPath query | Referer title path | HTTP/code | Result |
+| --- | --- | --- | --- |
+| verified slug | empty | 200 / 0 | no streams, hasResource=false |
+| empty | verified slug | 200 / 0 | 3 direct streams + 1 DASH, hasResource=true |
+| verified slug | verified slug | 200 / 0 | 3 direct streams + 1 DASH, hasResource=true |
+
+Thus **the missing title context in the H5 Referer is the demonstrated cause of empty H5
+responses**; adding the query path alone does not fix it. Both fields were previously derived
+from empty mobile detailUrl. Supplying the exact server path lets the existing provider build
+its ordinary Referer correctly. Original direct qualities: 360/480/1080 H.264, API duration
+3345 seconds; Indonesian: 480/1080 and DASH. No HLS was offered by these observed responses.
+Further S1E2 requests for both exact subjects also returned H5 candidates under the same path.
+
+Sanitized real Share redirects, cross-control results, observed stream metadata, video facts
+and bounded live media failures are preserved in `diagnostics/reacher_share_evidence_20261016.json`.
+No credential, signed URL, raw response, referral identity or media bytes are committed.
+
+### Minimal patch and verification limits
+
+`MovieboxPlayback.detailPath` retains explicit API detailPath/detailUrl precedence. Only if
+both are blank, it uses the two exact verified Reacher subject-to-path mappings; mismatched
+metadata identity cannot obtain a fallback. The selected subject is passed at the existing
+call site, so a failed metadata request does not lose this verified context. Other IDs keep
+exactly their previous behavior. These are stable catalog paths, not temporary signed media
+URLs. Future nonblank server metadata takes precedence if the catalog path changes.
+
+No source domain, API/mobile session, global header builder, parser, validator, audio filter,
+subtitle, codec, deduplication, episode list, catalog UI or other provider is changed. The
+existing source code builds both detailPath query and Referer from the corrected value.
+No v2/native source is added. Version 16 makes the scoped playback fix available to clients.
+
+Actual production parser/validator code was also exercised over real HTTP using an isolated
+CLI harness and the execution environment's normal egress with standard TLS verification.
+Media requests returned CDN 429 (587-byte HTML rate-limit responses) and socket timeouts;
+all such candidates were correctly rejected. A separate bounded request to the returned
+DASH host also got 429. No retry storm, region change, TLS bypass, proxy addition to production
+or validator relaxation was used. **Live manifest/segment validation and plugin device playback
+remain BLOCKED/NOT_TESTED here. API candidate recovery is proved; plugin playback success is
+not yet claimed.** The owner's app video does not remove this test limitation.
+
+Validation: baseline 29 regression + 20 provider/HTTP + 40 diagnostic tests passed before the
+patch. After the patch, 32 regression + 23 provider/HTTP tests and actual CloudStream SDK
+production Kotlin compilation PASS. New synthetic cases reproduce blank-path failure and
+exercise the repaired original/Indonesian S1E1/S1E2, missing metadata, path precedence, identity
+mismatch and unaffected unrelated titles. Real evidence tests are separate from playback.
+Next device gate: update Moviebox to version 16 in AdiXtream/CloudStream and test the exact
+original and Indonesian S1E1/S1E2; verify visible episode, duration and audio. No new diagnostic
+kit is required for that playback check.

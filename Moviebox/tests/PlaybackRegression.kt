@@ -96,6 +96,27 @@ fun main() = runBlocking {
         check(MovieboxPlayback.metadata(raw,"456")==null)
         check(MovieboxPlayback.metadata("""{"code":404,"data":{"subjectId":"123"}}""","123")==null)
     }
+    test("Reacher empty mobile paths use exact server Share identities and case") {
+        for ((id,path) in mapOf("3620534210064175096" to "reacher-e1nw56h5sj4",
+                "4149489342181954296" to "reacher-indonesian-WjrjjPIHwW4")) {
+            val detail=org.json.JSONObject().put("subjectId",id).put("detailUrl","")
+            check(MovieboxPlayback.detailPath(detail)==path)
+            check(MovieboxPlayback.detailPath(org.json.JSONObject(),id)==path)
+        }
+    }
+    test("Reacher fallback never replaces an explicit API path or detail URL") {
+        val id="3620534210064175096"
+        check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId",id)
+            .put("detailPath","server-new-path"),id)=="server-new-path")
+        check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId",id)
+            .put("detailUrl","https://movie-box.co/detail/server-url-path?id=$id"),id)=="server-url-path")
+    }
+    test("Reacher mapping cannot leak to another subject or mismatched metadata identity") {
+        check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId","123"))=="")
+        check(MovieboxPlayback.detailPath(org.json.JSONObject(),"123")=="")
+        check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId","123"),"3620534210064175096")=="")
+        check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId","4149489342181954296"),"3620534210064175096")=="")
+    }
     test("audio whitelist accepts exact official APK codes and aliases") {
         val groups = mapOf(
             MovieboxPlayback.AudioCategory.ORIGINAL to listOf("original","DEFAULT","Asli"),
