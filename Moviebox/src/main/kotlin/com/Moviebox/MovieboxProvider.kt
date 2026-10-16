@@ -1181,6 +1181,10 @@ class MovieBoxProvider : MainAPI() {
                     }
                 )
             }
+            MovieboxEpisodes.decorate(displayTitle,yearInt,poster,episodesList) { path ->
+                val response=app.get("https://api.themoviedb.org/3$path&api_key=$TMDB_API_KEY",timeout=4)
+                response.text.takeIf { response.code==200 }
+            }
             newTvSeriesLoadResponse(displayTitle, url, TvType.TvSeries, episodesList) {
                 this.posterUrl = poster
                 this.plot = description

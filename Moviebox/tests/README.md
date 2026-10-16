@@ -177,3 +177,38 @@ source, header/validator change or audio/subtitle change is introduced.
 production compilation PASS. Real H5 API candidates are restored for S1E1/S1E2. CDN 429/timeouts
 blocked live media validation here; plugin Android playback remains NOT_TESTED. See the audit
 and sanitized `diagnostics/reacher_share_evidence_20261016.json`.
+
+## Episode cards — Moviebox 17
+
+Owner confirmed Reacher playback works on version 16. This change adds episode display
+metadata only. `MovieboxPlayback.kt`, playback/auth/header/subtitle code, episode payloads,
+season/episode indices and plugin registration stay identical to version 16. No AdiXtream
+application change is made: its existing EpisodeAdapter selects the card layout when an
+episode has a poster or description.
+
+`MovieboxEpisodes` fills thumbnail, episode title, overview, rating and aired date through
+the existing TMDB service configuration. It requires an unambiguous exact TV title/year
+match (including original names), then joins metadata by exact season and episode number.
+Explicit terminal audio/season labels can be removed from the search title. It never adds,
+removes, reorders or changes the playback data of Moviebox's episode list. Future external
+air dates are omitted so an existing episode is not marked upcoming. Movie details and the
+existing trailer resolver are unchanged.
+
+When metadata is unavailable, ambiguous, timed out or missing a still, the current series
+cover supplies the episode image. The usual Episode N label remains when no matching title
+exists. Images use TMDB's HTTPS w300 still endpoint; Moviebox API auth/media cookies are not
+used. Lookups use one TV search and one request per existing season, at most three concurrent
+season requests, with a six-second overall optional budget. Failures leave the detail page
+and its original episodes available; cancellation of the parent load is respected.
+
+Validation: 18 metadata/parser/provider fixture tests, baseline 32 playback regressions,
+23 provider/local HTTP tests and real CloudStream SDK production compilation PASS. The old
+44 diagnostic/evidence tests also PASS. Metadata fixtures cover exact identity, wrong years,
+ambiguous titles, Unicode names, duplicate/wrong season items, stable playback data, image
+fallbacks, HTTP errors, bounded concurrency, cancellation, movie exclusion and future dates.
+
+Real HTTP evidence in `episode_cards_reacher_observed.json`: exact Reacher (2022) TMDB match
+108978; S1 and S2 each return eight episodes. Sample titles/stills match their season/episode;
+the S1E1 thumbnail returned HTTP 206, image/jpeg, with a valid JPEG prefix in a 1024-byte
+bounded sample. Credentials and API request URLs are omitted. Android rendering on the
+owner's installed app is NOT_TESTED here; the app already supports this card layout.

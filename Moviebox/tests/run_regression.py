@@ -69,6 +69,7 @@ def compile_to(output, sources):
 
 compile_to(CACHE / "production.jar", source)
 compile_to(CACHE / "tests.jar", source + tests)
-for entry in ["com.Moviebox.PlaybackRegressionKt", "com.Moviebox.PlaybackIntegrationKt"]:
+for entry in ["com.Moviebox.PlaybackRegressionKt", "com.Moviebox.PlaybackIntegrationKt",
+              "com.Moviebox.EpisodeMetadataRegressionKt"]:
     subprocess.run(["java", "-cp", str(CACHE / "tests.jar") + os.pathsep + classpath, entry], check=True, timeout=120)
 print("PASS production API compilation and fixture suites. Live service/device playback remains unverified.")
