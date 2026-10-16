@@ -156,3 +156,6 @@ capture remains necessary to compare the hidden business request contract accura
 See [REACHER_APK_CONTRACT.md](REACHER_APK_CONTRACT.md) for recovered call chains,
 identity matrix, new endpoint denials and the separate no-root diagnostic kit.
 No production playback or audio/subtitle behavior is changed by that follow-up.
+
+Phone follow-up: server original/Indonesian mapping is now proved. See the audit follow-up
+and diagnostic V2 for corrected query ordering and the still-unresolved resource 407.

@@ -1,4 +1,4 @@
-# Reacher diagnostic kit (tanpa root)
+# Reacher diagnostic kit V2 (tanpa root)
 
 Kit ini **tidak memperbaiki atau mengganti playback**. Tidak memasang APK Mod, membaca akun,
 mengakses data privat aplikasi, menangkap HTTPS aplikasi lain, mengubah DNS/region/TLS,
@@ -6,10 +6,10 @@ mengekspor token, atau memulai unduhan video. Kode ini tidak masuk ke plugin pro
 
 ## Termux
 
-Ekstrak `Reacher_Diagnostic_Kit.zip` ke folder Download. Di Termux jalankan:
+Ekstrak `Reacher_Diagnostic_Kit_V2.zip` ke folder Download. Di Termux jalankan:
 
 ```bash
-bash /storage/emulated/0/Download/Reacher_Diagnostic_Kit/RUN_TERMUX.sh
+bash /storage/emulated/0/Download/Reacher_Diagnostic_Kit_V2/RUN_TERMUX.sh
 ```
 
 Script memasang Python jika diperlukan dan meminta izin penyimpanan standar Termux.
@@ -30,7 +30,14 @@ cookie, password, raw logcat, atau URL media bertanda tangan.
   dibaca hanya di memori. Sesi guest baru dan ID instance acak milik probe tidak disimpan.
   Tidak menggunakan profil/device-bound oracle yang tertinggal dalam kode lama.
 - Hanya GET: bootstrap guest, `dub-info`, `get`, `season-info`, dan `resource`.
-  Tidak meminta `play-info`, v2, start-download atau source video; tidak mengubah pilihan audio.
+  V2 menambahkan GET `play-info` diagnostik **hanya S1E1** untuk dua ID Reacher yang telah
+  dibuktikan dub-info dari HP pengguna, setelah metadata subject cocok. Ini tidak mengaktifkan
+  sumber native di plugin, tidak mengambil media, tidak melakukan callback atau start-download.
+  `--metadata-only` dapat melewati pemeriksaan tersebut. Whitelist produksi tidak berubah.
+- Query API diurutkan alfabetis pada wire URL dan canonical signature. Kit pertama memakai
+  urutan insertion untuk resource; V2 disamakan dengan helper Kotlin playback terverifikasi.
+  Signature resource V2 telah dibandingkan dengan pemanggilan helper Kotlin asli dan cocok.
+  Ini koreksi kit; belum membuktikan 407 di HP sudah teratasi atau memperbaiki plugin.
 - Hubungan subject hanya berasal dari `dub-info`, maksimal tiga subject terkait yang masuk
   kategori Asli/Indonesia/Inggris. Tidak melakukan pencarian atau pemadanan judul otomatis.
 - S1E1, lalu S1E2 hanya bila season metadata mencantumkannya. Sparse `allEp` didahulukan;
@@ -38,10 +45,14 @@ cookie, password, raw logcat, atau URL media bertanda tangan.
   bukti media tersedia. Tidak menggeser season/episode untuk mencari hasil yang berhasil.
 - Parameter resource mengikuti kontrak APK; identitas subject dan indeks item diperiksa.
   URL download tidak diperlakukan sebagai stream. HTTP 401/403/441, termasuk code error
-  dalam HTTP 200, dihentikan dan dicatat sebagai hambatan akses, bukan resource tidak ada.
+  dalam HTTP 200, serta 407, dihentikan dan dicatat sebagai hambatan akses, bukan resource tidak ada.
 - JSON keluaran hanya berisi field yang diizinkan: ID, judul/tahun metadata, hubungan dub,
   path detail tanpa query, indeks season/episode/resource, HTTP/code, struktur/jumlah item.
-  Header, body mentah, pesan error mentah, URL media, cookie dan kunci tidak ditulis.
+  V2 juga menyimpan ID/type/resolusi resourceDetectors, bentuk detailUrl tanpa nilainya,
+  klasifikasi pesan error, dan kandidat/notice native tanpa URL/cookie. Header, body mentah,
+  pesan error mentah, URL media, cookie dan kunci tidak ditulis.
+- Request identik memakai cache. Jika kolom pembanding menunjuk anggota keluarga Reacher
+  yang sama, output menandainya; itu belum menjadi kontrol judul lain yang berhasil.
 - `media_validation=NOT_TESTED` dan `device_playback=NOT_TESTED` sengaja dipertahankan:
   probe metadata tidak membuktikan manifest/segmen valid atau video berhasil diputar.
 
@@ -78,3 +89,16 @@ python -m unittest discover -s Moviebox/tests/diagnostics -v
 
 Fixture sintetis menguji sanitasi, pemetaan subject/episode, berhenti saat akses ditolak,
 dan integritas source yang dipatok. Hasilnya tidak membuktikan Reacher dapat streaming.
+
+## Hasil HP yang memicu V2
+
+ZIP pertama membuktikan sesi guest berhasil dan pemetaan server:
+Asli `3620534210064175096` ↔ Indonesia `4149489342181954296`.
+Metadata asli mendeklarasikan empat season, Indonesia dua season, masing-masing delapan
+episode; ini bukan bukti episode tersebut memiliki media playable. `resource` S1E1/S1E2
+mendapat 407. Pesan 407 tidak disimpan kit pertama sehingga penyebabnya belum terbukti.
+Tidak ada cookie/token/URL media yang perlu Anda kirim.
+
+Jalankan V2 sekali dengan Enter untuk ID awal; versi Indonesia ditelusuri otomatis jika
+server kembali memberikan pemetaan tersebut. Kolom pembanding boleh dikosongkan. Kirim
+ZIP baru yang memiliki `version: 2`, bukan hasil kit lama.

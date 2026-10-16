@@ -132,3 +132,57 @@ compilation: PASS. 13 diagnostic tests: PASS, covering privacy, real denial fixt
 exact episode/resource association, bounded denial handling, and source hash integrity.
 These synthetic tests and successful kit execution are not Reacher playback/device tests.
 Android/official-app runtime capture and live Reacher media validation remain unavailable.
+
+## Follow-up: actual phone evidence and diagnostic V2
+
+New owner-supplied archive `Reacher_Diagnostic_20261016_193849_50894b.zip` was read;
+its on-device-sanitized distinct responses are preserved in
+`diagnostics/phone_reacher_metadata_20261016.json`. It contains 18 request records with
+10 distinct endpoint/subject/episode response contexts. No user session token was supplied.
+
+- Bootstrap HTTP 200/code 0, guest session available: the execution-region 403 limitation
+  does not apply to this phone run. Both subject metadata and dub-info succeeded.
+- Explicit server mapping: original `3620534210064175096`, Indonesian
+  `4149489342181954296`; both title/year metadata identify Reacher (2022).
+  No separate English category appears in this returned dub list. That does not establish
+  the actual original stream language or absence of all English media.
+- Original season metadata declares S1–S4; Indonesian declares S1–S2, each maxEp 8.
+  allEp is empty. These are declared indices, not validated media resources.
+- Both get responses have hasResource=true and one resourceDetectors entry. The first kit
+  saved only its count, so the resourceId/link structure remains unknown. playUrl has
+  PLAY_URL_WEB but an empty URL; it supplies no external playback destination.
+- Resource requests for S1E1/S1E2 returned HTTP/code 407. The first kit deliberately omitted
+  raw error messages, so neither the meaning of 407 nor an entitlement/version/signature
+  cause can be asserted from that archive. It is not assumed to be proxy authentication.
+- The supplied control ID is the original member of the same Reacher dub family; the
+  archive is a useful edition comparison but does not establish a working unrelated control.
+
+A targeted new H5 test used only the newly proven Indonesian ID, S1E1: official H5 detail
+returned 404; H5 play HTTP 200/code 0 with empty streams/dash/hls and hasResource=false.
+The old original-subject seven-host scan was not repeated. No production adapter is justified.
+
+The first diagnostic kit signed multi-parameter resource requests in insertion order, while
+the verified playback helper canonicalizes keys alphabetically. V2 sorts the wire query, so
+both legacy wire signing and sorted playback canonicalization agree for these plain resource
+parameters. A reflection call to the actual compiled Moviebox Kotlin helper gave the same
+fixed-timestamp signature as V2 for the Reacher Indonesian resource query. **This proves
+protocol alignment of the corrected kit, not that query ordering caused the phone's 407.**
+The provider already had sorted modern playback signing and is unchanged.
+
+V2 also classifies error messages without saving them, records resource detector identities
+without signed URLs, caches duplicate requests, stops episode retries on 407, and optionally
+checks the APK's native play-info contract read-only for exact Reacher S1E1. It makes no media
+requests and supplies no CloudStream links. Notices and explicit response identity mismatches
+are recorded; media validation/device playback remain NOT_TESTED. All changes are test/audit
+tooling; packaged Kotlin, sources, audio filter and plugin version 15 remain unchanged.
+
+Validation: 20 diagnostic tests PASS, including the real phone fixture, sorted signing,
+407 handling, native-diagnostic scope, identity mismatch and nested URL/cookie suppression.
+Next evidence: a V2 ZIP from the same phone connection, to establish the 407 error category
+and obtain sanitized resource/native response structure under the corrected query ordering.
+
+The phone evidence now rules out treating the initial ID as an unproven original ID: the
+server explicitly marks it original. It also returns the same dub family inline in get,
+so adding dub-info alone is not demonstrated to fix the production resolver. The next
+unknown is actual resource/native media under a valid request contract, not a guessed title
+replacement. hasResource=true still does not establish playable media.

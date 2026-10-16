@@ -139,4 +139,78 @@ class DiagnosticTests(unittest.TestCase):
                 self.assertEqual(z.namelist(),['diagnostic.json'])
                 self.assertEqual(json.loads(z.read('diagnostic.json'))['selections'][0]['subjectId'],kit.SEED)
 
+
+class V2DiagnosticTests(unittest.TestCase):
+    def test_resource_wire_query_matches_verified_sorted_contract(self):
+        params={'subjectId':'4149489342181954296','page':'1','perPage':10,'all':0,'startPosition':1,
+                'endPosition':1,'pagerMode':0,'resolution':0,'se':1,'epFrom':1,'epTo':1}
+        expected='all=0&endPosition=1&epFrom=1&epTo=1&page=1&pagerMode=0&perPage=10&resolution=0&se=1&startPosition=1&subjectId=4149489342181954296'
+        self.assertEqual(kit.wire_query(params),expected)
+        self.assertEqual(kit.wire_query(dict(reversed(list(params.items())))),expected)
+
+    def test_v2_error_classification_does_not_export_messages(self):
+        for text,hint in [('signature invalid PRIVATE https://secret.test','SIGNATURE_RELATED'),
+                          ('app version old PRIVATE','APP_VERSION_RELATED'),
+                          ('subscription required PRIVATE','MEMBERSHIP_RELATED'),
+                          ('unrecognized PRIVATE','UNKNOWN')]:
+            result=kit.error_hint({'message':text,'Cookie':'PRIVATE'})
+            self.assertEqual(result,hint);self.assertNotIn('PRIVATE',result)
+
+    def test_nested_resource_diagnostics_preserve_ids_without_urls_or_cookies(self):
+        d={'detailUrl':'','resourceDetectors':[{'type':0,'resourceId':'r123','resourceLink':'https://cdn.test/a?Signature=PRIVATE',
+             'downloadUrl':'https://cdn.test/d?token=PRIVATE','signCookie':'PRIVATE',
+             'resolutionList':[{'resourceId':'r456','se':1,'ep':1,'resolution':720,'url':'PRIVATE'}]}],
+           'streams':[{'id':'s1','url':'https://cdn.test/upgrade-notice.mp4?Signature=PRIVATE','signCookie':'PRIVATE','format':'DEFAULT'}]}
+        r=kit.summary(d)
+        self.assertEqual(r['resource_detectors'][0]['resolution_resources'][0]['resourceId'],'r456')
+        self.assertTrue(r['streams_candidates'][0]['known_notice'])
+        self.assertNotIn('PRIVATE',json.dumps(r));self.assertNotIn('https:',json.dumps(r))
+        self.assertEqual(r['detail_url_shape']['state'],'EMPTY')
+
+    def test_407_does_not_retry_another_resource_episode(self):
+        def respond(p,q):
+            if p.endswith('get'): return {'http':200},{'subjectId':q['subjectId']}
+            if p.endswith('season-info'): return {'http':200},{'seasons':[{'se':1,'maxEp':8}]}
+            if p.endswith('resource'): return {'http':407,'code':'407'},{}
+            return {'http':200},{}
+        g=FakeGuest(respond);r=kit.probe(g,[(kit.SEED,1,1)])
+        self.assertEqual(len([p for p,q in g.calls if p.endswith('resource')]),1)
+        self.assertEqual(r['requests'][-1]['stop_reason'],'RESOURCE_ACCESS_DENIED_NO_EPISODE_RETRY')
+
+    def test_related_target_and_control_share_cached_requests(self):
+        ind='4149489342181954296'
+        def respond(p,q):
+            if p.endswith('dub-info'): return {'http':200},{'dubs':[{'subjectId':kit.SEED,'original':True},{'subjectId':ind,'lanCode':'in_id'}]}
+            if p.endswith('season-info'): return {'http':200},{'seasons':[{'se':1,'allEp':'1'}]}
+            if p.endswith('get'): return {'http':200},{'subjectId':q['subjectId']}
+            return {'http':200},{'subjectId':q['subjectId'],'items':[]}
+        g=FakeGuest(respond);r=kit.probe(g,[(ind,1,1),(kit.SEED,1,1)])
+        signatures=[(p,tuple(sorted(q.items()))) for p,q in g.calls]
+        self.assertEqual(len(signatures),len(set(signatures)))
+        self.assertTrue(r['control_related_to_target'])
+        self.assertTrue(any(row['cache_hit'] for row in r['requests']))
+
+    def test_native_diagnostic_is_scoped_to_proven_reacher_ids_and_exact_episode(self):
+        def respond(p,q):
+            if p.endswith('get'): return {'http':200},{'subjectId':q['subjectId']}
+            if p.endswith('season-info'): return {'http':200},{'seasons':[{'se':1,'allEp':'1'}]}
+            if p.endswith('play-info'): return {'http':200},{'subjectId':q['subjectId'],'se':1,'ep':99}
+            return {'http':200},{}
+        for sid in (kit.SEED,'123'):
+            g=FakeGuest(respond);r=kit.probe(g,[(sid,1,1)],inspect_playback=True)
+            native=[row for row in r['requests'] if row['endpoint']=='play-info']
+            self.assertEqual(len(native),int(sid==kit.SEED))
+            if native:self.assertEqual(native[0]['response_identity'],'MISMATCH')
+            self.assertEqual(r['media_validation'],'NOT_TESTED')
+
+    def test_real_phone_fixture_proves_identity_but_not_media(self):
+        f=json.loads((Path(__file__).parent/'phone_reacher_metadata_20261016.json').read_text())
+        self.assertTrue(f['bootstrap']['guest_session_available'])
+        links=f['relationships']
+        self.assertTrue(any(r['to']==kit.SEED and r['category']=='ORIGINAL' for r in links))
+        self.assertTrue(any(r['to']=='4149489342181954296' and r['category']=='INDONESIAN' for r in links))
+        resources=[r for r in f['distinct_response_records'] if r['endpoint']=='resource']
+        self.assertTrue(resources and all(r['http']==407 for r in resources))
+        self.assertEqual(f['media_validation'],'NOT_TESTED')
+
 if __name__=='__main__': unittest.main()
