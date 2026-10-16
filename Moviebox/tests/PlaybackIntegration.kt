@@ -324,6 +324,37 @@ fun main() = runBlocking {
                 it.url.queryParameter("subjectId")==ind && it.url.queryParameter("se")=="1" && it.url.queryParameter("ep")=="1"
             })
         }
+        test("House of the Dragon each selected Share identity retains exact S1E1 and S1E2 context") {
+            val paths=mapOf("6890674365592471456" to "house-of-the-dragon-indonesian-2vLI2nqm1d8",
+                "5373384118887662624" to "house-of-the-dragon-uTatZHG9Wo6",
+                "7721864815710718808" to "house-of-the-dragon-G7LGtmOdqc9",
+                "3135126230249492760" to "house-of-the-dragon-kkZZ8pvUAJ3")
+            for ((id,path) in paths) for (ep in listOf(1,2)) {
+                PlaybackApiFixture.requests.clear()
+                PlaybackApiFixture.responder = { r -> when {
+                    r.url.encodedPath.endsWith("subject-api/get") -> response(r,body="""{"data":{"subjectId":"$id","detailUrl":""}}""")
+                    r.url.encodedPath.endsWith("subject/play") && r.url.queryParameter("subjectId")==id &&
+                        r.url.queryParameter("detailPath")==path &&
+                        r.header("Referer").orEmpty().contains("/movies/$path?id=$id&") ->
+                        response(r,body=json("dragon-$id-$ep.mp4"))
+                    r.url.encodedPath.endsWith("subject/play") -> response(r,body="""{"code":0,"data":{"streams":[],"hasResource":false}}""")
+                    else -> response(r,404)
+                } }
+                val (ok,links,_)=load(1,ep,id)
+                check(ok && links.single().url.endsWith("dragon-$id-$ep.mp4"))
+                val requests=PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("subject/play") }
+                check(requests.size==1 && requests.all { it.url.queryParameter("subjectId")==id &&
+                    it.url.queryParameter("se")=="1" && it.url.queryParameter("ep")==ep.toString() })
+            }
+        }
+        test("House of the Dragon Share context survives metadata failure without linking editions") {
+            val id="5373384118887662624";val path="house-of-the-dragon-uTatZHG9Wo6"
+            PlaybackApiFixture.responder = { r -> if(r.url.encodedPath.endsWith("subject/play") &&
+                r.url.queryParameter("subjectId")==id && r.header("Referer").orEmpty().contains("/movies/$path?"))
+                response(r,body=json("dragon-guest.mp4")) else response(r,403) }
+            val (ok,links,_)=load(1,1,id);check(ok && links.single().url.endsWith("dragon-guest.mp4"))
+            check(PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("subject/play") }.size==1)
+        }
         test("unrelated subjects keep existing blank-path H5 behavior") {
             PlaybackApiFixture.responder = { r ->
                 if(r.url.encodedPath.endsWith("subject/play")) {

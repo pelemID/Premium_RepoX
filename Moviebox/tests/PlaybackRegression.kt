@@ -117,6 +117,28 @@ fun main() = runBlocking {
         check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId","123"),"3620534210064175096")=="")
         check(MovieboxPlayback.detailPath(org.json.JSONObject().put("subjectId","4149489342181954296"),"3620534210064175096")=="")
     }
+    test("House of the Dragon exact Share identities preserve path case and API precedence") {
+        val paths=mapOf("6890674365592471456" to "house-of-the-dragon-indonesian-2vLI2nqm1d8",
+            "5373384118887662624" to "house-of-the-dragon-uTatZHG9Wo6",
+            "7721864815710718808" to "house-of-the-dragon-G7LGtmOdqc9",
+            "3135126230249492760" to "house-of-the-dragon-kkZZ8pvUAJ3")
+        for ((id,path) in paths) {
+            check(MovieboxPlayback.detailPath(JSONObject(),id)==path)
+            check(MovieboxPlayback.detailPath(JSONObject().put("subjectId",id).put("detailUrl",""),id)==path)
+            check(MovieboxPlayback.detailPath(JSONObject().put("subjectId",id).put("detailPath","api-path"),id)=="api-path")
+            check(MovieboxPlayback.detailPath(JSONObject().put("subjectId",id)
+                .put("detailUrl","https://movie-box.co/movies/api-url?id=$id"),id)=="api-url")
+            for (other in paths.keys.filter { it!=id })
+                check(MovieboxPlayback.detailPath(JSONObject().put("subjectId",other),id)=="")
+        }
+    }
+    test("House of the Dragon context cannot override a mismatched episode or subject") {
+        val id="5373384118887662624"
+        for (identity in listOf("\"subjectId\":\"7721864815710718808\"", "\"se\":1,\"ep\":2")) {
+            check(MovieboxPlayback.parse("""{"code":0,"data":{$identity,"streams":[{"url":"$url"}]}}""",
+                "H5",id,1,1).isEmpty())
+        }
+    }
     test("audio whitelist accepts exact official APK codes and aliases") {
         val groups = mapOf(
             MovieboxPlayback.AudioCategory.ORIGINAL to listOf("original","DEFAULT","Asli"),

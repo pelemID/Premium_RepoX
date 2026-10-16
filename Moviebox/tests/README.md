@@ -212,3 +212,52 @@ Real HTTP evidence in `episode_cards_reacher_observed.json`: exact Reacher (2022
 the S1E1 thumbnail returned HTTP 206, image/jpeg, with a valid JPEG prefix in a 1024-byte
 bounded sample. Credentials and API request URLs are omitted. Android rendering on the
 owner's installed app is NOT_TESTED here; the app already supports this card layout.
+
+
+## House of the Dragon — Moviebox 18
+
+The owner's four Share URLs redirect to four distinct exact subject/path pairs. They are
+not merged into one title, used as substitutes for each other, or treated as proof of a
+cross-edition dubbing relationship:
+
+| Share | Subject | Server-issued path |
+| --- | --- | --- |
+| q3XeoVCyta2 | 6890674365592471456 | house-of-the-dragon-indonesian-2vLI2nqm1d8 |
+| YA5Jg23jdc | 5373384118887662624 | house-of-the-dragon-uTatZHG9Wo6 |
+| 8uHrrrN9Nw8 | 7721864815710718808 | house-of-the-dragon-G7LGtmOdqc9 |
+| EmzlSBQbV59 | 3135126230249492760 | house-of-the-dragon-kkZZ8pvUAJ3 |
+
+Real read-only HTTP controls on 2026-10-16 used the existing provider's H5 headers,
+unchanged subject, S1E1 and codecs. For all four IDs, empty title context returned HTTP 200,
+code 0, hasResource=false and no streams. Supplying that same ID's Share path in the query
+and Referer returned hasResource=true: respectively 1/3/4/1 MP4 candidates and 1/1/2/1 DASH
+candidates, with two HLS candidates additionally on 7721864815710718808. S1E2 also returned
+resources for each exact ID. These are API candidates, not validated playback claims.
+
+The additional 5373384118887662624 cross-control isolates the failure: correct query path
+with empty Referer path still returns nothing; empty query path with correct Referer path
+returns three MP4 and one DASH candidate. Thus missing Referer title context can suppress
+existing media independently of the episode number. The production fix supplies only the
+four server-issued paths when metadata paths are unavailable. Explicit API paths retain
+precedence, mismatched metadata identities remain blocked, and no episode or subject is
+replaced. There is no claim that catalog entries with similar names are interchangeable.
+
+Production code changes are four fallback entries plus comments in MovieboxPlayback and
+the version increment. MovieboxProvider, episode cards, Reacher's mappings, global H5 hosts,
+headers, media validator, audio whitelist, subtitles, codec/quality and deduplication are
+unchanged. Future server-provided paths still override these fallbacks.
+
+Validation: 34 schema/media regressions, 25 actual-provider/local-HTTP integrations,
+18 episode metadata tests, 44 diagnostic tests, and production compilation against the
+real CloudStream SDK PASS. Added fixtures exercise all four selected identities at S1E1
+and S1E2, case preservation, explicit metadata precedence, wrong identity/episode rejection,
+and unavailable metadata without cross-edition fallback. Local media is synthetic.
+
+See diagnostics/house_dragon_share_evidence_20261016.json for sanitized real evidence.
+A separate unchanged-production-parser/validator probe parsed eight candidates for
+7721864815710718808. Representative DASH/HLS/MP4 requests were blocked by CDN 429 or
+timeout; the Indonesian-entry API call timed out in that probe. No live media passed
+validation here and fixed-plugin device playback is NOT_TESTED. Validators remain intact;
+this release repairs the proven missing-context failure, not an asserted CDN restriction.
+The owner's recordings demonstrate existing app playback/one plugin no-link entry, but
+do not prove playback of this new build. No cookies, tokens or signed URLs are stored.

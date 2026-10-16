@@ -105,13 +105,17 @@ internal object MovieboxPlayback {
         // Prefer the explicit API path over a legacy/redirect detail URL.
         val value = text(detail,"detailPath").ifBlank { text(detail,"detailUrl") }.ifBlank {
             // Verified 2026-10-16 from the owner's server-issued Share redirects:
-            // v.moviebox.ph/4qq9KlyIys8 and v.moviebox.ph/kW2VHLAW2ia.
-            // Mobile metadata has an empty detailUrl for these exact subjects. Do not
+            // Reacher and House of the Dragon paths/evidence are recorded in tests.
+            // An unavailable title context returns empty H5 resources for these IDs. Do not
             // infer slugs from titles, replace existing paths, or map another edition.
             if (text(detail,"subjectId").let { it.isNotBlank() && it != subject }) ""
             else when (subject) {
                 "3620534210064175096" -> "reacher-e1nw56h5sj4"
                 "4149489342181954296" -> "reacher-indonesian-WjrjjPIHwW4"
+                "6890674365592471456" -> "house-of-the-dragon-indonesian-2vLI2nqm1d8"
+                "5373384118887662624" -> "house-of-the-dragon-uTatZHG9Wo6"
+                "7721864815710718808" -> "house-of-the-dragon-G7LGtmOdqc9"
+                "3135126230249492760" -> "house-of-the-dragon-kkZZ8pvUAJ3"
                 else -> ""
             }
         }
