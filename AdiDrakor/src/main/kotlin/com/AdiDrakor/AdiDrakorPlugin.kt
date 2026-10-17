@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class AdiDrakorPlugin : Plugin() {
     override fun load(context: Context) {
         AdiDrakorMovieboxEngine.attachContext(context)
+        openSettings = { settingsContext -> AdiDrakorMovieboxDiagnostics.show(settingsContext) }
         registerMainAPI(AdiDrakor())
     }
 }

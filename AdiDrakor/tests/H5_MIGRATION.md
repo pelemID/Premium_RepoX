@@ -209,3 +209,12 @@ python3 AdiDrakor/tests/probe_finder_v2.py
 Only public subject metadata is saved in fixtures; no signed media resources or
 session data are persisted. Fixture and local HTTP success must be reported
 separately from live H5 responses and actual Android playback.
+
+## V4 follow-up
+
+See `SPIDER_V4_CONTRACT.md`. The reference remains read-only. The four local ports
+now deliberately differ in request-local sampling/pacing, complete-manifest reuse,
+early callbacks and sanitized diagnostics, plus independent cross-language proof.
+Parser/header/interceptor/security contracts and all original behavioral fixtures
+remain enforced; byte parity is no longer incorrectly required for the changed
+validator and scheduler. Current end-to-end deadline remains 90 seconds.

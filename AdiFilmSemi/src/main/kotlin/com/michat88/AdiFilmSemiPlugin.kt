@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class AdiFilmSemiPlugin : Plugin() {
     override fun load(context: Context) {
         AdiFilmSemiMovieboxEngine.attachContext(context)
+        openSettings = { settingsContext -> AdiFilmSemiMovieboxDiagnostics.show(settingsContext) }
         registerMainAPI(AdiFilmSemi())
     }
 }

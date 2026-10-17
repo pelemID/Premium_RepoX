@@ -15,7 +15,7 @@ internal object AdiDrakorMovieboxMapping {
         val tmdbId: String? = null, val imdbId: String? = null, val overview: String? = null,
         val runtimeMinutes: Int? = null, val castNames: List<String> = emptyList(), val works: List<Work>? = null,
         val excludedSubjects: Set<String> = emptySet(), val localizedTitles: List<String> = emptyList(),
-        val localizedOverviews: List<String> = emptyList())
+        val localizedOverviews: List<String> = emptyList(), val originalLanguage: String? = null)
     data class Subject(val id: String, val title: String, val year: Int?, val type: Int)
     data class Edition(val subject: Subject, val metadata: JSONObject)
     data class Result(val subject: Subject?, val reason: String, val metadata: JSONObject? = null,
@@ -92,6 +92,7 @@ internal object AdiDrakorMovieboxMapping {
         val titles=(r.titles+listOf("title","original_title","name","original_name").map { AdiDrakorMovieboxPlayback.text(meta,it) }+
             priority+aliases.map { AdiDrakorMovieboxPlayback.text(it,"title") }).filter { it.isNotBlank() }.distinctBy(::normalize)
         return r.copy(titles=titles,localizedTitles=priority,
+            originalLanguage=AdiDrakorMovieboxPlayback.text(meta,"original_language").takeIf { it.matches(Regex("[a-z]{2,3}")) } ?: r.originalLanguage,
             localizedOverviews=translations.map { AdiDrakorMovieboxPlayback.text(it,"overview") }.filter { it.isNotBlank() }.distinct(),
             year=r.year ?: AdiDrakorMovieboxPlayback.text(meta,if(r.type==1) "release_date" else "first_air_date").take(4).toIntOrNull(),
             imdbId=r.imdbId ?: meta.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.matches(Regex("tt[0-9]{5,12}")) },
@@ -169,6 +170,14 @@ internal object AdiDrakorMovieboxMapping {
         val imdb=external("imdbId","imdb_id").filter { it.matches(Regex("tt[0-9]{5,12}")) }.toSet()
         if(r.tmdbId!=null && tmdb.any { it!=r.tmdbId }) return "EXTERNAL_ID_CONFLICT"
         if(r.imdbId!=null && imdb.any { it!=r.imdbId }) return "EXTERNAL_ID_CONFLICT"
+        if(r.originalLanguage!=null && AdiDrakorMovieboxPlayback.audioLanguages(playbackMetadata(meta)).any {
+            AdiDrakorMovieboxPlayback.audioCategory(it)==AdiDrakorMovieboxPlayback.AudioCategory.UNSUPPORTED &&
+            AdiDrakorMovieboxPlayback.audioName(it)!=AdiDrakorMovieboxPlayback.audioName(r.originalLanguage)
+        }) return "AUDIO_EDITION_UNVERIFIED"
+        val durationSeconds=meta.optInt("durationSeconds",0).takeIf { it>0 }
+            ?: AdiDrakorMovieboxPlayback.text(meta,"duration").toIntOrNull()?.takeIf { it>0 }
+        if(r.type==1 && durationSeconds!=null && r.runtimeMinutes!=null &&
+            kotlin.math.abs(durationSeconds/60-r.runtimeMinutes)>maxOf(25,r.runtimeMinutes/3)) return "RUNTIME_MISMATCH"
         if((r.tmdbId!=null && r.tmdbId in tmdb) || (r.imdbId!=null && r.imdbId in imdb)) return "EXTERNAL_ID_MATCH"
         // Only the real MainAPI supplies a selected TMDB ID. Unit schema fixtures may omit it.
         if(r.tmdbId==null) return "LEGACY_TITLE_YEAR"
@@ -191,6 +200,16 @@ internal object AdiDrakorMovieboxMapping {
             kotlin.math.abs(runtime-r.runtimeMinutes)<=maxOf(8,r.runtimeMinutes/10)
         if(r.type==1 && runtime!=null && r.runtimeMinutes!=null &&
             kotlin.math.abs(runtime-r.runtimeMinutes)>maxOf(25,r.runtimeMinutes/3)) return "RUNTIME_MISMATCH"
+        val castCount=r.castNames.map(::normalize).filter { it.isNotBlank() }.toSet().intersect(names).size
+        val exact=subject(meta)?.let { titleMatches(r,it) }==true
+        // A localized display title absent from TMDB is not an alias by guesswork.
+        // Require three independent channels (cast, plot, runtime), exact type/year,
+        // and a margin over known competing works before crossing that boundary.
+        if(!exact && Regex("(?i)\\[[^]]+\\]|\\btrailer\\b|\\bfull\\s+movie\\b")
+            .containsMatchIn(AdiDrakorMovieboxPlayback.text(meta,"title"))) return "EDITION_NOT_VERIFIED"
+        if(!exact) return if(castCount>=3 && durationAgrees && shared>=6 && score>=0.4 && score>=other+0.2 &&
+            subject(meta)?.let { it.type==r.type && it.year!=null && it.year==r.year }==true)
+            "CROSS_LANGUAGE_VERIFIED" else "CROSS_LANGUAGE_UNVERIFIED"
         if(castAgrees) return "CAST_MATCH"
         val plotAgrees=(shared>=8 && score>=0.5) || (durationAgrees && shared>=4 && score>=0.25)
         if(plotAgrees && score>=other+0.15) return "PLOT_MATCH"
@@ -199,11 +218,12 @@ internal object AdiDrakorMovieboxMapping {
         return if(works==null) "TMDB_IDENTITY_UNVERIFIED" else "AMBIGUOUS_TMDB_WORK"
     }
     private fun trusted(r: Request, meta: JSONObject): Boolean = identity(r,meta) in setOf(
-        "EXTERNAL_ID_MATCH","CAST_MATCH","PLOT_MATCH","LEGACY_TITLE_YEAR")
+        "EXTERNAL_ID_MATCH","CAST_MATCH","PLOT_MATCH","CROSS_LANGUAGE_VERIFIED","LEGACY_TITLE_YEAR")
 
     fun matches(r: Request, s: Subject): Boolean = valid(r) && s.type == r.type && s.year == r.year && titleMatches(r,s)
     private fun potential(r: Request, s: Subject): Boolean =
-        (s.type !in 1..2 || s.type == r.type) && (r.tmdbId!=null || r.imdbId!=null || r.year == null || s.year == null || s.year == r.year) && titleMatches(r,s)
+        (s.type !in 1..2 || s.type == r.type) && (r.tmdbId!=null || r.imdbId!=null || r.year == null || s.year == null || s.year == r.year) && (titleMatches(r,s) ||
+            ((r.tmdbId!=null || r.imdbId!=null) && (r.year==null || s.year==null || kotlin.math.abs(r.year-s.year)<=1)))
     fun choose(r: Request, candidates: List<Subject>): Result {
         if (!valid(r)) return Result(null,"INSUFFICIENT_TMDB_IDENTITY")
         val matches = candidates.filter { matches(r,it) }.distinctBy { it.id }
@@ -333,7 +353,8 @@ internal object AdiDrakorMovieboxMapping {
                 r.castNames.map(::normalize).toSet().intersect(cast).size>=2 && plotWords>=8 && plotOverlap>=0.5
             val yearOK=s.year==r.year && r.year!=null || proof=="EXTERNAL_ID_MATCH" || seasonEdition ||
                 ((r.year==null || s.year==null) && proof in setOf("CAST_MATCH","PLOT_MATCH"))
-            val sameWork=valid(r) && s.type==r.type && titleMatches(r,s) && yearOK
+            val titleOK=titleMatches(r,s) || proof in setOf("EXTERNAL_ID_MATCH","CROSS_LANGUAGE_VERIFIED")
+            val sameWork=valid(r) && s.type==r.type && titleOK && yearOK
             if(s.id!=id || !sameWork || !trusted(r,meta)) {
                 rejected+=id
                 lastError=when {
@@ -341,7 +362,7 @@ internal object AdiDrakorMovieboxMapping {
                     proof=="EXTERNAL_ID_CONFLICT" -> proof
                     s.type!=r.type -> "MOVIE_TYPE_MISMATCH"
                     !yearOK -> "YEAR_MISMATCH"
-                    !titleMatches(r,s) -> "SUBJECT_DETAIL_IDENTITY_MISMATCH"
+                    !titleOK -> "IDENTITY_REJECTED"
                     else -> proof
                 }
                 return null
@@ -356,7 +377,9 @@ internal object AdiDrakorMovieboxMapping {
             if(possible.isEmpty()) return null
             // At most three same-ID detail lookups concurrently; IO cancellation propagates.
             // Verification state mutations remain sequential; parallel reads are prefetched.
-            val pending=possible.filter { it.id !in verified && (attempts[it.id] ?: 0)<2 }.take(16)
+            val needed=possible.filter { it.id !in verified && (attempts[it.id] ?: 0)<2 }
+            val exact=needed.filter { titleMatches(r,it) }
+            val pending=(exact.ifEmpty { needed }).take(16)
             val gate=Semaphore(3)
             val prefetched=coroutineScope { pending.map { candidate -> async {
                 candidate.id to gate.withPermit { safe { detail(candidate.id) } }
@@ -369,7 +392,7 @@ internal object AdiDrakorMovieboxMapping {
                 val ids=AdiDrakorMovieboxPlayback.objects(meta.optJSONArray("dubs")).map { AdiDrakorMovieboxPlayback.text(it,"subjectId") }.toSet()
                 remaining.all { it.id in ids } && verified.keys.all { it in ids }
             }
-            val strong=setOf("EXTERNAL_ID_MATCH","CAST_MATCH","PLOT_MATCH")
+            val strong=setOf("EXTERNAL_ID_MATCH","CAST_MATCH","PLOT_MATCH","CROSS_LANGUAGE_VERIFIED")
             val chosen: List<Pair<Subject,JSONObject>> = when {
                 families.size==1 -> listOf(families.single())
                 verified.isNotEmpty() && verified.values.all { identity(r,it.second) in strong } -> {
@@ -406,7 +429,8 @@ internal object AdiDrakorMovieboxMapping {
                 val response=try { JSONObject(raw) } catch (_: Exception) { lastError="SEARCH_API_INVALID";break }
                 if(response.optInt("code",-1)!=0) { lastError="SEARCH_API_REJECTED";break }
                 successfulSearch=true
-                for(candidate in parseSearch(raw).filter { potential(r,it) }) {
+                for(candidate in parseSearch(raw).filter { potential(r,it) }.sortedWith(
+                    compareBy<Subject> { !titleMatches(r,it) }.thenBy { it.year!=r.year })) {
                     if(candidates.size<32 || candidate.id in candidates) candidates[candidate.id]=candidate
                 }
                 // Finish the advertised bounded pages before a metadata-level decision: later
@@ -416,6 +440,13 @@ internal object AdiDrakorMovieboxMapping {
                     break
                 }
             }
+        }
+        // Broad localized discovery must not delay verified exact-title work. After
+        // queries finish, inspect remaining bounded candidates even if a later API failed.
+        repeat(4) {
+            val before=attempts.values.sum()
+            select()?.let { return it }
+            if(attempts.values.sum()==before) return@repeat
         }
         if(!successfulSearch) return Result(null,lastError,candidates=candidates.size,verified=verified.size)
         if(candidates.isEmpty()) return Result(null,"SUBJECT_NOT_FOUND_OR_IDENTITY_MISMATCH")

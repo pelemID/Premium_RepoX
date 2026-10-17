@@ -28,31 +28,31 @@ for module, package in MODULES.items():
             assert f"import {other_package}." not in production
     expected=(ROOT / "Moviebox/src/main/kotlin/com/Moviebox/MovieboxPlayback.kt").read_text()
     actual=next(p for p in source if p.name == module+"MovieboxPlayback.kt").read_text()
-    assert actual.replace(package,"com.Moviebox").replace(module+"MovieboxPlayback","MovieboxPlayback") == expected
+    normalized=actual.replace(package,"com.Moviebox").replace(module+"MovieboxPlayback","MovieboxPlayback")
+    # V4 changes only validation scheduling/reporting. Preserve byte equality of
+    # parsing, audio, credential scope, headers, sample compatibility, HLS and DASH.
+    start="    suspend fun validate(s: Stream, headers: Map<String, String>,"
+    end="    private suspend fun binary"
+    original_validation=expected[expected.index(start):expected.index(end)]
+    normalized=normalized[:normalized.index(start)]+original_validation+normalized[normalized.index(end):]
+    assert normalized==expected, "upstream stream/security/parser contract drift"
     upstream=(ROOT / "Moviebox/src/main/kotlin/com/Moviebox/MovieboxProvider.kt").read_text()
-    upstream_flow=upstream[upstream.index("    override fun getVideoInterceptor("):upstream.index("    data class RankingResponse(")]
-    port=next(p for p in source if p.name == module+"MovieboxEngine.kt").read_text()
+    port=next(p for p in source if p.name==module+"MovieboxEngine.kt").read_text()
     port=port.replace(module+"MovieboxPlayback","MovieboxPlayback")
-    port_flow=port[port.index("    fun getVideoInterceptor("):port.index("    suspend fun resolve(")]
-    upstream_flow=upstream_flow.replace("override fun","fun").replace("override suspend fun","suspend fun")
-    # Standalone Moviebox now recovers navigation context; the Adi engines already
-    # receive verified context through their own independent TMDB adapters.
-    context_hook='''            val path = playbackContext.knownPath(detail,subject).orEmpty().ifBlank {
-                playbackContext.resolve(subject,selected.subjectId,selected.title,selected.detailPath,detail) { url ->
-                    playbackRequest(url,mapOf("User-Agent" to MovieboxPlayback.WEB_UA,"Referer" to "https://moviebox.ph/"))
-                        ?.takeIf { it.first==200 }?.second
-                }
-            }'''
-    assert upstream_flow.count(context_hook)==1, "unexpected standalone context hook"
-    upstream_flow=upstream_flow.replace(context_hook,'''            val path = MovieboxPlayback.detailPath(detail,subject)''')
-    port_flow=port_flow.replace(',\n        metadataContext: Map<String,JSONObject> = emptyMap(),\n        onStage: (String) -> Unit = {}', '')
-    port_flow=port_flow.replace('            onStage(if(candidates.isEmpty()) "H5_NO_STREAM" else if(count==0) "H5_MEDIA_INVALID" else "PLAYBACK_SUCCESS")\n','')
-    port_flow=port_flow.replace('            metadataContext[subject]?.takeIf { MovieboxPlayback.text(it,"subjectId")==subject }?.let { return it }\n','')
-    assert port_flow.strip() == upstream_flow.strip(), "H5 flow/interceptor drift"
-    for suffix in ["Mapping", "Engine"]:
+    def section(text,first,last):return text[text.index(first):text.index(last)]
+    # The actual interceptor remains exact; behavioral fixtures now cover the
+    # deliberately different request-local media scheduler and early callbacks.
+    original=section(upstream,"    override fun getVideoInterceptor(","    /** Do not log response bodies")
+    assert section(port,"    fun getVideoInterceptor(","    /** Do not log response bodies")==original.replace("override fun","fun")
+    assert section(port,"        fun webHeaders(","        suspend fun metadata(")==section(upstream,"        fun webHeaders(","        suspend fun metadata(")
+    first="        // Each validated stream/resource ID owns its captions;"
+    last='        if (choices.isEmpty())'
+    assert section(port,first,last)==section(upstream,first,last)
+    assert 'streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1' in port
+    for suffix in ["Mapping", "Engine", "Playback", "Media", "Diagnostics"]:
         canonical=(ROOT / "AdiDrakor/src/main/kotlin/com/AdiDrakor" / ("AdiDrakorMoviebox"+suffix+".kt")).read_text()
         actual=next(p for p in source if p.name==module+"Moviebox"+suffix+".kt").read_text()
-        actual=actual.replace(package,"com.AdiDrakor").replace(module+"Moviebox","AdiDrakorMoviebox").replace(module.lower()+"_moviebox_identity","adidrakor_moviebox_identity")
+        actual=actual.replace(package,"com.AdiDrakor").replace(module,"AdiDrakor").replace(module.lower()+"_moviebox_identity","adidrakor_moviebox_identity")
         assert actual==canonical, "finder/interceptor/diagnostic parity drift"
     assert not (ROOT / "Adicinemax21/src/main/kotlin/com/lagradost/cloudstream3/utils").exists()
     with tempfile.TemporaryDirectory(prefix=f"{module}-h5-") as tmp:
@@ -68,6 +68,10 @@ for module, package in MODULES.items():
         for key,value in {"PACKAGE":package,"MATCHER":module+"MovieboxMapping","PLAYBACK":module+"MovieboxPlayback","PROVIDER":module}.items():
             text=text.replace(key,value)
         target=tmp / "MappingRegression.kt";target.write_text(text);tests.append(target)
+        text=(ROOT / "AdiDrakor/tests/MediaRecoveryRegression.kt.in").read_text()
+        for key,value in {"PACKAGE":package,"V4MATCHER":module+"MovieboxMapping","V4PLAYBACK":module+"MovieboxPlayback","V4MEDIA":module+"MovieboxMedia","V4LOG":module+"MovieboxDiagnostics","V4ENGINE":module+"MovieboxEngine","V4PROVIDER":module}.items():
+            text=text.replace(key,value)
+        target=tmp / "MediaRecoveryRegression.kt";target.write_text(text);tests.append(target)
         tests += sorted((ROOT / "Moviebox/tests/shims").glob("*.kt"))
         # Compile fixtures separately against the actual production jar. Friend access only
         # exposes internal ports to tests; test shims precede the SDK at runtime.
@@ -75,7 +79,7 @@ for module, package in MODULES.items():
             "-no-stdlib","-no-reflect","-jvm-target","11","-Xfriend-paths="+str(tmp / "production.jar"),
             "-classpath",str(tmp / "production.jar")+os.pathsep+env["classpath"],
             "-d",str(tmp / "tests.jar"),*map(str,tests)],check=True)
-        for entry in ["PlaybackRegressionKt","PlaybackIntegrationKt","MappingRegressionKt"]:
+        for entry in ["PlaybackRegressionKt","PlaybackIntegrationKt","MappingRegressionKt","MediaRecoveryRegressionKt"]:
             subprocess.run(["java","-Dmigration.fixtures="+str(ROOT / "AdiDrakor/tests/fixtures"),"-cp",str(tmp / "tests.jar")+os.pathsep+str(tmp / "production.jar")+os.pathsep+env["classpath"],package+"."+entry],check=True,timeout=150)
     print(f"PASS {module}: isolated SDK compile, original H5 parity, TMDB mapping and registered MainAPI",flush=True)
 print("ALL FOUR H5 MIGRATIONS PASS; live service and Android device playback NOT_TESTED")

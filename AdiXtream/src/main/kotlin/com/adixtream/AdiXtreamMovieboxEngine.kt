@@ -445,8 +445,10 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
         metadataContext: Map<String,JSONObject> = emptyMap(),
+        mediaSession: AdiXtreamMovieboxMedia = AdiXtreamMovieboxMedia(),
         onStage: (String) -> Unit = {}
     ): Boolean {
+        if(metadataContext.isEmpty()) AdiXtreamMovieboxDiagnostics.clear()
         val selected = AppUtils.tryParseJson<EpData>(data) ?: return false
         if (!selected.subjectId.matches(Regex("[0-9]+")) || selected.se < 0 || selected.ep < 0) return false
         // Movie 0/0; serial EXACTLY the requested season/episode. Never retry a different episode.
@@ -503,6 +505,30 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
             return AdiXtreamMovieboxPlayback.metadata(web?.takeIf { it.first == 200 }?.second,subject)
         }
 
+        val labelCounts=mutableMapOf<String,Int>()
+        val completedGroups=mutableSetOf<String>()
+        fun diagnostic(stage: String,reason: String,subject: String,stream: AdiXtreamMovieboxPlayback.Stream?=null,
+            event: AdiXtreamMovieboxMedia.Event?=null,candidates: Int?=null,validated: Int?=null) {
+            val fields=mutableMapOf<String,Any?>("subjectId" to subject,"se" to se,"ep" to ep,
+                "type" to (stream?.format ?: selected.subjectType.toString()),"quality" to stream?.quality,
+                "codec" to stream?.let { AdiXtreamMovieboxPlayback.codecName(it.codec).takeIf { c -> c in setOf("H.264","H.265","AV1","VP9") } ?: "unknown" },
+                "audio" to stream?.category?.name,"candidates" to candidates,"validated" to validated)
+            if(event!=null) fields.putAll(mapOf("host" to event.host,"status" to event.status,"mime" to event.mime,
+                "redirect" to event.redirect,"attempt" to event.attempt,"elapsedMs" to event.elapsedMs,
+                "ranged" to event.ranged,"retryAfterMs" to event.retryAfterMs,"protocol" to event.protocol))
+            AdiXtreamMovieboxDiagnostics.record(stage,reason,fields)
+        }
+        suspend fun emit(choice: PlaybackChoice) {
+            val stream=choice.stream
+            val label=AdiXtreamMovieboxPlayback.label(stream,choice.format)
+            val group="$label|${stream.quality}";val number=(labelCounts[group] ?: 0)+1;labelCounts[group]=number
+            val type=when(choice.format) { AdiXtreamMovieboxPlayback.Format.DASH->ExtractorLinkType.DASH
+                AdiXtreamMovieboxPlayback.Format.HLS->ExtractorLinkType.M3U8;AdiXtreamMovieboxPlayback.Format.VIDEO->ExtractorLinkType.VIDEO }
+            callback(newExtractorLink(name,label+if(number>1) " • Server $number" else "",stream.url,type) {
+                this.headers=choice.headers;this.referer=choice.referer;stream.quality?.let { this.quality=it }
+            })
+            diagnostic("FINAL-PLAYBACK","PLAYBACK_READY",selected.subjectId,stream)
+        }
         suspend fun collectStreams(raw: String, subject: String, origin: String,
                          referer: String, audio: String, originalLanguage: String): Int {
             val parsed = try { AdiXtreamMovieboxPlayback.parse(raw,"H5",subject,se,ep,audio,originalLanguage) }
@@ -518,36 +544,36 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
             }.filterNot { AdiXtreamMovieboxPlayback.notice(it.url) }.distinctBy { AdiXtreamMovieboxPlayback.requestKey(it) }
                 .sortedWith(compareBy<AdiXtreamMovieboxPlayback.Stream> { it.codec.contains("hevc",true) }
                     .thenBy { it.format.equals("DASH",true) }.thenByDescending { it.quality ?: 0 })
-            val semaphore = Semaphore(3)
-            val checked = coroutineScope {
-                candidates.map { stream -> async {
-                    semaphore.withPermit {
-                        val headers = AdiXtreamMovieboxPlayback.mediaHeaders(stream,origin,referer,
-                            AdiXtreamMovieboxPlayback.WEB_UA)
-                        val cacheKey = stream.url + "|" + headers.toSortedMap().toString()
-                        val valid = validatedUrls[cacheKey]?.let { AdiXtreamMovieboxPlayback.Validated(stream,it) }
-                            ?: if (cacheKey in failedUrls) null else try {
-                                AdiXtreamMovieboxPlayback.validate(stream,headers)
-                            } catch (e: CancellationException) { throw e
-                            } catch (_: Exception) { null }
-                        Triple(stream,headers,valid)
-                    }
-                } }.map { it.await() }
-            }
-            var count = 0
-            for ((stream,headers,valid) in checked) {
-                val cacheKey = stream.url + "|" + headers.toSortedMap().toString()
-                if (valid == null) { failedUrls += cacheKey; continue }
-                validatedUrls[cacheKey] = valid.format
-                val captionKey = subject to stream.id
-                if (stream.id.isNotBlank() && captionKey !in captionIds)
-                    captionIds[captionKey] = stream.audio
-                val key = AdiXtreamMovieboxPlayback.key(stream)
-                if (key in choices) continue
-                choices[key] = PlaybackChoice(stream,headers,referer,valid.format)
-                count++
+            var count=0
+            // Sequential preferred candidates avoid CDN bursts. Cache identical transport
+            // requests across qualities; skip redundant servers only after that group validates.
+            for(stream in candidates) {
+                val group="${stream.category}|${stream.quality}|${AdiXtreamMovieboxPlayback.codecName(stream.codec)}|${stream.format}"
+                if(group in completedGroups) continue
+                val headers=AdiXtreamMovieboxPlayback.mediaHeaders(stream,origin,referer,AdiXtreamMovieboxPlayback.WEB_UA)
+                val cacheKey=stream.url+"|"+headers.toSortedMap()
+                diagnostic("MEDIA-CANDIDATE","H5_STREAM_PARSED",subject,stream,candidates=candidates.size)
+                val valid=validatedUrls[cacheKey]?.let { AdiXtreamMovieboxPlayback.Validated(stream,it) }
+                    ?: if(cacheKey in failedUrls) null else try {
+                        AdiXtreamMovieboxPlayback.validateObserved(stream,headers,{ reason ->
+                            diagnostic("MEDIA-VALIDATION",reason,subject,stream)
+                        }) { url,h,manifest -> mediaSession.sample(url,h,stream.url,manifest) { event ->
+                            diagnostic(event.stage,event.reason,subject,stream,event)
+                        } }
+                    } catch(e: CancellationException) { throw e } catch (_: Exception) { null }
+                if(valid==null) { failedUrls+=cacheKey;continue }
+                validatedUrls[cacheKey]=valid.format;completedGroups+=group
+                val captionKey=subject to stream.id
+                if(stream.id.isNotBlank() && captionKey !in captionIds) captionIds[captionKey]=stream.audio
+                val key=AdiXtreamMovieboxPlayback.key(stream)
+                if(key in choices) continue
+                val choice=PlaybackChoice(stream,headers,referer,valid.format)
+                choices[key]=choice;count++
+                // Publish each validated choice immediately, before slower optional sources/captions.
+                emit(choice)
             }
             Log.d(TAG, "[PLAYBACK-H5] subject=$subject parsed=${parsed.size} audioFiltered=${parsed.count { it.category == AdiXtreamMovieboxPlayback.AudioCategory.UNSUPPORTED }} candidates=${candidates.size} validated=$count se=$se ep=$ep")
+            diagnostic("H5-PLAY-RESPONSE",if(candidates.isEmpty()) "H5_EMPTY" else "H5_STREAM_PARSED",subject,candidates=candidates.size,validated=count)
             onStage(if(candidates.isEmpty()) "H5_NO_STREAM" else if(count==0) "H5_MEDIA_INVALID" else "PLAYBACK_SUCCESS")
             return count
         }
@@ -586,7 +612,11 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
                 val url = "$host/wefeed-h5api-bff/subject/play?${query(subject)}&detailPath=$encodedPath" +
                     "&streamSignType=1&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1"
                 val referer = "$host/movies/$encodedPath?id=$subject&type=/movie/detail&detailSe=&detailEp=&lang=en"
-                val response = playbackRequest(url,webHeaders(host,referer)) ?: continue
+                diagnostic("H5-PLAY-REQUEST","H5_REQUEST",subject)
+                val response = playbackRequest(url,webHeaders(host,referer))
+                if(response==null) { diagnostic("H5-PLAY-RESPONSE","H5_REQUEST_FAILED",subject);continue }
+                diagnostic("H5-PLAY-RESPONSE",if(response.first==200) "H5_RESPONSE" else "H5_REQUEST_FAILED",subject,
+                    event=AdiXtreamMovieboxMedia.Event("H5-PLAY-RESPONSE","",java.net.URI(host).host,response.first))
                 if (response.first == 200 && collectStreams(response.second,subject,host,referer,audio,
                         if (subject == selected.subjectId) originalLanguage else "") > 0) {
                     preferredHost = host
@@ -604,25 +634,6 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
             .thenByDescending { it.stream.quality ?: 0 }
             .thenBy { AdiXtreamMovieboxPlayback.codecOrder(it.stream.codec) }
             .thenBy { it.format.ordinal })
-        val labelCounts = mutableMapOf<String,Int>()
-        for (choice in orderedChoices) {
-            val stream = choice.stream
-            val label = AdiXtreamMovieboxPlayback.label(stream,choice.format)
-            val group = "$label|${stream.quality}"
-            val number = (labelCounts[group] ?: 0) + 1
-            labelCounts[group] = number
-            val finalLabel = label + if (number > 1) " • Server $number" else ""
-            val type = when (choice.format) {
-                AdiXtreamMovieboxPlayback.Format.DASH -> ExtractorLinkType.DASH
-                AdiXtreamMovieboxPlayback.Format.HLS -> ExtractorLinkType.M3U8
-                AdiXtreamMovieboxPlayback.Format.VIDEO -> ExtractorLinkType.VIDEO
-            }
-            callback(newExtractorLink(name,finalLabel,stream.url,type) {
-                this.headers = choice.headers
-                this.referer = choice.referer
-                stream.quality?.let { this.quality = it }
-            })
-        }
         // Each validated stream/resource ID owns its captions; the selected serial index is unchanged.
         for ((identity,audio) in captionIds) {
             val (subject,stream) = identity
@@ -647,6 +658,7 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
             }
         }
         if (choices.isEmpty()) Log.e(TAG,"[PLAYBACK-H5] no validated resource subject=${selected.subjectId} se=$se ep=$ep")
+        diagnostic("FINAL-PLAYBACK",if(orderedChoices.isEmpty()) "NO_VALID_MEDIA" else "PLAYBACK_READY",selected.subjectId,validated=orderedChoices.size)
         return orderedChoices.isNotEmpty()
     }
 
@@ -656,9 +668,11 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
         subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit,
         tmdbId: String? = null, imdbId: String? = null, overview: String? = null,
         runtimeMinutes: Int? = null, castNames: List<String> = emptyList()): Boolean {
+        AdiXtreamMovieboxDiagnostics.clear()
         val started=System.nanoTime()
         fun report(stage: String, reason: String, candidates: Int = 0, verified: Int = 0) {
             Log.d(TAG,"[FINDER] stage=$stage reason=$reason candidates=$candidates verified=$verified elapsedMs=${(System.nanoTime()-started)/1_000_000} type=$type se=$season ep=$episode")
+            AdiXtreamMovieboxDiagnostics.record("FINDER-$stage",reason,mapOf("candidates" to candidates,"verified" to verified,"elapsedMs" to (System.nanoTime()-started)/1_000_000,"se" to season,"ep" to episode))
         }
         val completed=withTimeoutOrNull(90_000) {
             try {
@@ -804,10 +818,13 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
                             "SUBJECT_DETAIL_UNAVAILABLE" -> "DETAIL_UNAVAILABLE"
                             else -> discovery.reason
                         }
+                        AdiXtreamMovieboxDiagnostics.record("SPIDER-IDENTITY","IDENTITY_REJECTED",mapOf("tmdbId" to tmdbId,"candidates" to discovery.candidates))
                         report("identity",reason,discovery.candidates,discovery.verified)
                         return@coroutineScope false
                     }
+                    AdiXtreamMovieboxDiagnostics.record("SPIDER-IDENTITY","IDENTITY_VERIFIED",mapOf("tmdbId" to tmdbId,"subjectId" to subject.id,"se" to season,"ep" to episode))
                     report("identity","VERIFIED",discovery.candidates,discovery.verified)
+                    val mediaSession=AdiXtreamMovieboxMedia()
                     var current: AdiXtreamMovieboxMapping.Result=discovery
                     val attempted=mutableSetOf<String>()
                     while(attempted.size<3) {
@@ -819,7 +836,7 @@ internal class AdiXtreamMovieboxEngine(private val name: String, private val tmd
                             val selected=EpData(edition.subject.id,if(type==1) 0 else season!!,if(type==1) 0 else episode!!,type)
                             val context=mapOf(edition.subject.id to AdiXtreamMovieboxMapping.playbackMetadata(edition.metadata))
                             var h5Reason="H5_NO_STREAM"
-                            val played=loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback,context) { stage ->
+                            val played=loadLinks(with(AppUtils) { selected.toJson() },false,subtitleCallback,callback,context,mediaSession) { stage ->
                                 if(stage=="H5_MEDIA_INVALID" || h5Reason!="H5_MEDIA_INVALID") h5Reason=stage
                             }
                             report("h5",if(played) "PLAYBACK_SUCCESS" else h5Reason,current.candidates,current.verified)

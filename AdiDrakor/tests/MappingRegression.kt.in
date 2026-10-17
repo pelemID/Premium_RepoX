@@ -207,7 +207,9 @@ fun main() = runBlocking {
         val req=bilingual.copy(titles=listOf("Pelaut di Bulan","Moon Sailor"))
         val english=item().put("title","Moon Sailor").put("tmdbId","10")
         val seen=mutableListOf<String>()
-        val got=MATCHER.resolve(req,{q -> seen+=q;if(q=="Moon Sailor") catalog(english) else catalog(item().put("title","Moon Sailor Returns"))},{envelope(english)},{null})
+        val wrong=item(movie.copy(id="124")).put("title","Moon Sailor Returns").put("tmdbId","11")
+        val got=MATCHER.resolve(req,{q -> seen+=q;if(q=="Moon Sailor") catalog(english) else catalog(wrong)},
+            { id -> envelope(if(id=="123") english else wrong) },{null})
         check(got.subject?.title=="Moon Sailor" && seen==listOf("Pelaut di Bulan","Moon Sailor"))
     }
     test("official local aliases stay inside request budget even with many other countries") {

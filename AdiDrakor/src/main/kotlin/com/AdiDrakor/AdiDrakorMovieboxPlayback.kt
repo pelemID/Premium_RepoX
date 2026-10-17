@@ -297,13 +297,25 @@ internal object AdiDrakorMovieboxPlayback {
     suspend fun validate(s: Stream, headers: Map<String, String>,
         fetch: suspend (String, Map<String, String>, Boolean) -> Sample? = { u,h,m -> sample(u,h,s.url,m) }
     ): Validated? {
-        val first = fetch(s.url, headers, false) ?: return null
-        val type = format(s, first) ?: return null
-        if (type == Format.VIDEO) return Validated(s, type)
-        val manifest = fetch(s.url, headers, true) ?: return null
-        if (manifest.truncated || format(s, manifest) != type) return null
-        val ok = if (type == Format.HLS) hls(manifest, headers, fetch, 0) else dash(manifest, headers, fetch)
-        return if (ok) Validated(s, type) else null
+        return validateObserved(s,headers,{},fetch)
+    }
+    /** Same parsers and segment/security checks; a complete manifest sample needs no second GET. */
+    suspend fun validateObserved(s: Stream, headers: Map<String,String>, report: (String) -> Unit,
+        fetch: suspend (String,Map<String,String>,Boolean) -> Sample?): Validated? {
+        val first=fetch(s.url,headers,false) ?: run { report("MEDIA_UNAVAILABLE");return null }
+        if(first.code !in 200..299) {
+            report(when(first.code) {429->"MEDIA_HTTP_429";426->"MEDIA_HTTP_426";401,403->"MEDIA_AUTH_FAILED";else->"MEDIA_HTTP_ERROR"})
+            return null
+        }
+        val type=format(s,first) ?: run { report("MEDIA_CONTENT_INVALID");return null }
+        if(type==Format.VIDEO) { report("MEDIA_VALIDATED");return Validated(s,type) }
+        val manifest=if(!first.truncated) first else fetch(s.url,headers,true)
+        if(manifest==null || manifest.truncated || format(s,manifest)!=type) { report("MEDIA_MANIFEST_INVALID");return null }
+        var children=0
+        val childFetch: suspend (String,Map<String,String>,Boolean)->Sample? = { u,h,m -> children++;fetch(u,h,m) }
+        val ok=if(type==Format.HLS) hls(manifest,headers,childFetch,0) else dash(manifest,headers,childFetch)
+        report(if(ok) "MEDIA_VALIDATED" else if(children>0) "MEDIA_SEGMENT_FAILED" else "MEDIA_MANIFEST_INVALID")
+        return if(ok) Validated(s,type) else null
     }
     private suspend fun binary(url: String, headers: Map<String, String>,
         fetch: suspend (String, Map<String, String>, Boolean) -> Sample?): Boolean {

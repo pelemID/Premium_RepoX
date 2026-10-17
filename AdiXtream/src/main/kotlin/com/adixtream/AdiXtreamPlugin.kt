@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 class AdiXtreamPlugin : Plugin() {
     override fun load(context: Context) {
         AdiXtreamMovieboxEngine.attachContext(context)
+        openSettings = { settingsContext -> AdiXtreamMovieboxDiagnostics.show(settingsContext) }
         registerMainAPI(AdiXtream())
     }
 }
