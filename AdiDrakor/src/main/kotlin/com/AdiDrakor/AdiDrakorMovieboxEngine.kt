@@ -708,24 +708,13 @@ internal class AdiDrakorMovieboxEngine(private val name: String, private val tmd
                             if(request.tmdbId!=null) {
                                 val metadataKey="tmdb:$kind:$tmdbId"
                                 val raw=catalogCache.get(metadataKey) ?: withTimeoutOrNull(5000) {
-                                    try { app.get("https://api.themoviedb.org/3/$kind/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,external_ids,alternative_titles&language=en-US",timeout=5)
+                                    try { app.get("https://api.themoviedb.org/3/$kind/$tmdbId?api_key=$tmdbApiKey&append_to_response=credits,external_ids,alternative_titles,translations&language=en-US",timeout=5)
                                         .takeIf { it.code==200 }?.text }
                                     catch(e: CancellationException) { throw e } catch (_: Exception) { null }
                                 }
                                 raw?.let { catalogCache.put(metadataKey,it) }
                                 val meta=try { JSONObject(raw ?: "{}") } catch (_: Exception) { JSONObject() }
-                                if(AdiDrakorMovieboxPlayback.text(meta,"id")==tmdbId) {
-                                    val extra=meta.optJSONObject("external_ids")
-                                    val aliases=meta.optJSONObject("alternative_titles")
-                                    request=request.copy(
-                                        year=request.year ?: AdiDrakorMovieboxPlayback.text(meta,if(type==1) "release_date" else "first_air_date").take(4).toIntOrNull(),
-                                        imdbId=request.imdbId ?: extra?.optString("imdb_id")?.takeIf { it.matches(Regex("tt[0-9]{5,12}")) },
-                                        overview=AdiDrakorMovieboxPlayback.text(meta,"overview").takeIf { it.isNotBlank() } ?: request.overview,
-                                        castNames=(request.castNames+AdiDrakorMovieboxPlayback.objects(meta.optJSONObject("credits")?.optJSONArray("cast")).take(8).map { AdiDrakorMovieboxPlayback.text(it,"name") }).distinct(),
-                                        runtimeMinutes=request.runtimeMinutes ?: meta.optInt("runtime",0).takeIf { it>0 },
-                                        titles=(request.titles+listOf("title","original_title","name","original_name").map { AdiDrakorMovieboxPlayback.text(meta,it) }+
-                                            AdiDrakorMovieboxPlayback.objects(aliases?.optJSONArray("titles") ?: aliases?.optJSONArray("results")).map { AdiDrakorMovieboxPlayback.text(it,"title") }).filter { it.isNotBlank() }.distinct())
-                                }
+                                request=AdiDrakorMovieboxMapping.hydrate(request,meta)
                             }
                             val q=URLEncoder.encode(request.titles.first(),"UTF-8")
                             val yearKey=if(type==1) "year" else "first_air_date_year"

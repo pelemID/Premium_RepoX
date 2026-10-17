@@ -14,7 +14,8 @@ internal object AdiFilmSemiMovieboxMapping {
     data class Request(val titles: List<String>, val year: Int?, val type: Int, val season: Int?, val episode: Int?,
         val tmdbId: String? = null, val imdbId: String? = null, val overview: String? = null,
         val runtimeMinutes: Int? = null, val castNames: List<String> = emptyList(), val works: List<Work>? = null,
-        val excludedSubjects: Set<String> = emptySet())
+        val excludedSubjects: Set<String> = emptySet(), val localizedTitles: List<String> = emptyList(),
+        val localizedOverviews: List<String> = emptyList())
     data class Subject(val id: String, val title: String, val year: Int?, val type: Int)
     data class Edition(val subject: Subject, val metadata: JSONObject)
     data class Result(val subject: Subject?, val reason: String, val metadata: JSONObject? = null,
@@ -50,7 +51,7 @@ internal object AdiFilmSemiMovieboxMapping {
     } catch (_: Exception) { emptyList() }
     fun parseSearch(raw: String?): List<Subject> = searchObjects(raw).mapNotNull(::subject)
     private fun titleMatches(r: Request, s: Subject): Boolean {
-        fun exact(value: String)=r.titles.any { normalize(it).isNotEmpty() && comparable(it)==comparable(value) }
+        fun exact(value: String)=(r.titles+r.localizedTitles).any { normalize(it).isNotEmpty() && comparable(it)==comparable(value) }
         if(exact(s.title)) return true
         if(r.type!=2 || r.season==null) return false
         // Moviebox displays series ranges such as S1-S3. This is display metadata,
@@ -76,6 +77,32 @@ internal object AdiFilmSemiMovieboxMapping {
                     ?.let { Work(it,AdiFilmSemiMovieboxPlayback.text(row,"overview")) }
             }.distinctBy { it.id }
     } catch (_: Exception) { null }
+    /** Translations belong to the selected TMDB ID. Never translate or infer a franchise title. */
+    fun hydrate(r: Request, meta: JSONObject): Request {
+        if(r.tmdbId==null || AdiFilmSemiMovieboxPlayback.text(meta,"id")!=r.tmdbId) return r
+        val translations=AdiFilmSemiMovieboxPlayback.objects(meta.optJSONObject("translations")?.optJSONArray("translations"))
+            .filter { AdiFilmSemiMovieboxPlayback.text(it,"iso_639_1") in setOf("en","id") }
+            .sortedBy { if(AdiFilmSemiMovieboxPlayback.text(it,"iso_639_1")=="id") 0 else 1 }
+            .mapNotNull { it.optJSONObject("data") }
+        val alternatives=meta.optJSONObject("alternative_titles")
+        val aliases=AdiFilmSemiMovieboxPlayback.objects(alternatives?.optJSONArray("titles") ?: alternatives?.optJSONArray("results"))
+        val priority=(translations.flatMap { t -> listOf("title","name").map { AdiFilmSemiMovieboxPlayback.text(t,it) } }+
+            aliases.filter { AdiFilmSemiMovieboxPlayback.text(it,"iso_3166_1") in setOf("ID","US","GB") }
+                .map { AdiFilmSemiMovieboxPlayback.text(it,"title") }).filter { it.isNotBlank() }.distinctBy(::normalize)
+        val titles=(r.titles+listOf("title","original_title","name","original_name").map { AdiFilmSemiMovieboxPlayback.text(meta,it) }+
+            priority+aliases.map { AdiFilmSemiMovieboxPlayback.text(it,"title") }).filter { it.isNotBlank() }.distinctBy(::normalize)
+        return r.copy(titles=titles,localizedTitles=priority,
+            localizedOverviews=translations.map { AdiFilmSemiMovieboxPlayback.text(it,"overview") }.filter { it.isNotBlank() }.distinct(),
+            year=r.year ?: AdiFilmSemiMovieboxPlayback.text(meta,if(r.type==1) "release_date" else "first_air_date").take(4).toIntOrNull(),
+            imdbId=r.imdbId ?: meta.optJSONObject("external_ids")?.optString("imdb_id")?.takeIf { it.matches(Regex("tt[0-9]{5,12}")) },
+            overview=AdiFilmSemiMovieboxPlayback.text(meta,"overview").takeIf { it.isNotBlank() } ?: r.overview,
+            castNames=(r.castNames+AdiFilmSemiMovieboxPlayback.objects(meta.optJSONObject("credits")?.optJSONArray("cast")).take(8)
+                .map { AdiFilmSemiMovieboxPlayback.text(it,"name") }).filter { it.isNotBlank() }.distinct(),
+            runtimeMinutes=r.runtimeMinutes ?: meta.optInt("runtime",0).takeIf { it>0 })
+    }
+    private fun requestPlot(r: Request, description: String): Pair<Int,Double> =
+        (listOfNotNull(r.overview)+r.localizedOverviews).map { plotScore(it,description) }
+            .maxWithOrNull(compareBy<Pair<Int,Double>> { it.second }.thenBy { it.first }) ?: (0 to 0.0)
     fun queries(r: Request): List<String> {
         val titles=r.titles.map { it.trim() }.filter { it.isNotBlank() }.distinctBy(::normalize)
         val primary=titles.take(2)
@@ -85,7 +112,7 @@ internal object AdiFilmSemiMovieboxMapping {
         }
         val main=titles.firstOrNull() ?: return emptyList()
         val prefix=main.substringBefore(':').trim().takeIf { ':' in main && normalize(it).length>=5 }
-        return (primary+listOf(normalize(main))+aliases+listOfNotNull(prefix))
+        return (primary+r.localizedTitles+listOf(normalize(main))+aliases+listOfNotNull(prefix))
             .filter { it.isNotBlank() }.distinctBy { it.lowercase(Locale.ROOT) }.take(12)
     }
     fun hasMore(raw: String?): Boolean = try {
@@ -97,7 +124,11 @@ internal object AdiFilmSemiMovieboxMapping {
     private val stopWords=setOf("the","and","with","from","that","this","they","their","into","after","before",
         "when","where","who","what","which","while","until","through","than","then","have","has","had","are",
         "was","were","will","would","could","should","his","her","him","she","for","not","but","its","you",
-        "your","our","out","can","one","new","all","only","own","about","against","must","being","been","life","time","world","city","family","friends","people","young","man","woman","find","finds","begins","old","story")
+        "your","our","out","can","one","new","all","only","own","about","against","must","being","been","life","time","world","city","family","friends","people","young","man","woman","find","finds","begins","old","story",
+        "dan","yang","dari","untuk","dengan","adalah","ini","itu","mereka","sebuah","seorang","pada","dalam",
+        "ketika","saat","setelah","sebelum","oleh","akan","telah","sudah","harus","juga","namun","tetapi",
+        "hingga","atau","menjadi","karena","agar","tentang","lebih","sebagai","sangat","para","pun","kembali",
+        "hidup","dunia","kota","keluarga","teman","kisah")
     private fun words(s: String): Set<String> = normalize(s).split(' ').filter { it.length>=3 && it !in stopWords }.toSet()
     fun plotScore(a: String, b: String): Pair<Int,Double> {
         val left=words(a);val right=words(b)
@@ -142,10 +173,10 @@ internal object AdiFilmSemiMovieboxMapping {
         // Only the real MainAPI supplies a selected TMDB ID. Unit schema fixtures may omit it.
         if(r.tmdbId==null) return "LEGACY_TITLE_YEAR"
         val works=r.works
-        val primary=subject(meta)?.let { titleMatches(r.copy(titles=r.titles.take(1)),it) }==true
+        val primary=subject(meta)?.let { titleMatches(r.copy(titles=r.titles.take(1),localizedTitles=emptyList()),it) }==true
 
         val description=AdiFilmSemiMovieboxPlayback.text(meta,"description")
-        val (shared,score)=plotScore(r.overview.orEmpty(),description)
+        val (shared,score)=requestPlot(r,description)
         val other=works.orEmpty().filter { it.id!=r.tmdbId }.maxOfOrNull {
             plotScore(it.overview,description).second
         } ?: 0.0
@@ -294,7 +325,7 @@ internal object AdiFilmSemiMovieboxMapping {
             val meta=AdiFilmSemiMovieboxPlayback.metadata(raw,id) ?: run { lastError="SUBJECT_DETAIL_IDENTITY_MISMATCH";return null }
             val s=subject(meta) ?: return null
             val proof=identity(r,meta)
-            val (plotWords,plotOverlap)=plotScore(r.overview.orEmpty(),AdiFilmSemiMovieboxPlayback.text(meta,"description"))
+            val (plotWords,plotOverlap)=requestPlot(r,AdiFilmSemiMovieboxPlayback.text(meta,"description"))
             val cast=AdiFilmSemiMovieboxPlayback.objects(meta.optJSONArray("staffList"))
                 .map { normalize(AdiFilmSemiMovieboxPlayback.text(it,"name")) }.toSet()
             val seasonEdition=r.type==2 && (r.season ?: 0)>1 && r.year!=null && s.year!=null && s.year>=r.year &&

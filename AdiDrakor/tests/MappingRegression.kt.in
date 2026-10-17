@@ -169,6 +169,68 @@ fun main() = runBlocking {
         check(MATCHER.identity(target,merged)=="EXTERNAL_ID_CONFLICT")
         check(MATCHER.identity(target,MATCHER.mergeMetadata(item().put("tmdbId",0),JSONObject().put("tmdbId","10")))=="EXTERNAL_ID_MATCH")
     }
+    val translated=JSONObject("""{"id":10,"title":"Moon Sailor","original_title":"Moon Sailor","release_date":"2022-01-01",
+      "translations":{"translations":[
+        {"iso_639_1":"id","data":{"title":"Pelaut di Bulan","overview":"Kapten Nadia menemukan pemancar purba tersembunyi dekat kawah bulan sambil menyelamatkan teknisi Arman dari stasiun orbital rusak"}},
+        {"iso_639_1":"en","data":{"title":"Moon Sailor","overview":"Captain Nadia discovers ancient signals beneath lunar craters while rescuing engineer Arman aboard damaged orbital station"}},
+        {"iso_639_1":"fr","data":{"title":"Un autre titre"}}]},
+      "credits":{"cast":[{"name":"Actor A"},{"name":"Actor B"}]}}""")
+    val bilingual=MATCHER.hydrate(target.copy(titles=listOf("Moon Sailor")),translated)
+    test("same-ID official Indonesian and English translations become prioritized queries") {
+        check("Pelaut di Bulan" in bilingual.titles && "Moon Sailor" in bilingual.titles)
+        check("Un autre titre" !in bilingual.titles)
+        check(MATCHER.queries(bilingual).indexOf("Pelaut di Bulan") in 0..2)
+    }
+    test("wrong TMDB translation owner cannot inject titles synopsis or cast") {
+        check(MATCHER.hydrate(target,JSONObject(translated.toString()).put("id",11))==target)
+        check(MATCHER.hydrate(target.copy(tmdbId=null),translated).titles==target.titles)
+    }
+    test("localized synopsis proves identity without combining two weak translations") {
+        val local=item().put("title","Pelaut di Bulan").put("description",bilingual.localizedOverviews.first())
+        check(MATCHER.identity(bilingual,local)=="PLOT_MATCH")
+        check(MATCHER.resolve(bilingual,{catalog(local)},{envelope(local)},{null}).subject?.title=="Pelaut di Bulan")
+        val weak=bilingual.copy(overview="one short clue",localizedOverviews=listOf("another short clue"),castNames=emptyList())
+        check(MATCHER.identity(weak,item().put("title","Pelaut di Bulan").put("description","one short clue another short clue")) !in setOf("PLOT_MATCH","CAST_MATCH"))
+    }
+    test("Indonesian function words cannot turn unrelated synopsis into identity proof") {
+        val common="dan yang dari untuk dengan adalah mereka sebuah seorang pada dalam ketika saat setelah sebelum oleh akan telah sudah harus juga namun tetapi hingga atau menjadi karena agar tentang lebih sebagai sangat para kembali hidup dunia kota keluarga teman kisah"
+        val req=bilingual.copy(overview=null,localizedOverviews=listOf("$common kapten menyelamatkan teknisi bulan"),castNames=emptyList())
+        check(MATCHER.identity(req,item().put("title","Pelaut di Bulan").put("description","$common penyanyi merawat biola pedesaan")) !in setOf("PLOT_MATCH","CAST_MATCH"))
+    }
+    test("shared translated title with unrelated work or conflicting ID cannot reach selection") {
+        val wrong=item().put("title","Pelaut di Bulan").put("description","Unrelated romance at a summer festival")
+        check(MATCHER.resolve(bilingual,{catalog(wrong)},{envelope(wrong)},{null}).subject==null)
+        wrong.put("tmdbId","11").put("staffList",org.json.JSONArray().put(JSONObject().put("name","Actor A")).put(JSONObject().put("name","Actor B")))
+        check(MATCHER.resolve(bilingual,{catalog(wrong)},{envelope(wrong)},{null}).reason=="EXTERNAL_ID_CONFLICT")
+    }
+    test("Indonesian search miss can recover official English title without wrong-franchise fallback") {
+        val req=bilingual.copy(titles=listOf("Pelaut di Bulan","Moon Sailor"))
+        val english=item().put("title","Moon Sailor").put("tmdbId","10")
+        val seen=mutableListOf<String>()
+        val got=MATCHER.resolve(req,{q -> seen+=q;if(q=="Moon Sailor") catalog(english) else catalog(item().put("title","Moon Sailor Returns"))},{envelope(english)},{null})
+        check(got.subject?.title=="Moon Sailor" && seen==listOf("Pelaut di Bulan","Moon Sailor"))
+    }
+    test("official local aliases stay inside request budget even with many other countries") {
+        val many=bilingual.copy(titles=listOf("Moon Sailor","Original Title")+(1..30).map { "Long distinctive other country alias $it" })
+        check("Pelaut di Bulan" in MATCHER.queries(many).take(4))
+        check(MATCHER.queries(many).size<=12)
+    }
+    test("localized cast proof still rejects wrong year media type and requested episode") {
+        val local=item().put("title","Pelaut di Bulan").put("staffList",org.json.JSONArray().put(JSONObject().put("name","Actor A")).put(JSONObject().put("name","Actor B")))
+        check(MATCHER.resolve(bilingual,{catalog(local)},{envelope(JSONObject(local.toString()).put("releaseDate","1999-01-01"))},{null}).subject==null)
+        check(MATCHER.resolve(bilingual,{catalog(JSONObject(local.toString()).put("subjectType",2))},{envelope(local)},{null}).subject==null)
+        val tv=JSONObject(local.toString()).put("subjectType",2)
+        check(MATCHER.resolve(bilingual.copy(type=2,season=9,episode=4),{catalog(tv)},{envelope(tv)},{seasons}).reason=="EPISODE_NOT_AVAILABLE")
+    }
+    test("live Spider-Man metadata keeps actual distinct TMDB and Moviebox synopsis and verifies owning cast") {
+        val tmdb=JSONObject(java.io.File(System.getProperty("migration.fixtures"),"spiderman-tmdb-bilingual.json").readText())
+        val public=MATCHER.catalogPage(java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-stars-nuxt.html").readText()).single()
+        val req=MATCHER.hydrate(MATCHER.Request(listOf("Spider-Man: Brand New Day"),2026,1,null,null,tmdbId="969681"),tmdb)
+        check(req.overview!=public.getString("description"))
+        check("Spider-Man: Hari Baru" !in req.titles) // TMDB supplies no such title: never invent one.
+        check(MATCHER.identity(req,public)=="CAST_MATCH")
+        check(MATCHER.resolve(req,{catalog(public)},{envelope(public)},{null}).subject?.id=="6026412232966389904")
+    }
     test("explicit external ID conflict rejects same title year") {
         check(MATCHER.identity(target,item().put("tmdbId","11"))=="EXTERNAL_ID_CONFLICT")
         check(MATCHER.identity(target,item().put("imdbId","tt7654321"))=="EXTERNAL_ID_CONFLICT")
@@ -456,12 +518,40 @@ fun main() = runBlocking {
             check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
         }
 
+        test("registered MainAPI hydrates same-ID English Indonesian translations before verified H5 callback") {
+            val meta=item().put("title","Moon Sailor").put("staffList",org.json.JSONArray().put(JSONObject().put("name","Actor A")).put(JSONObject().put("name","Actor B")))
+                .put("detailPath","moon-sailor-authoritative-path")
+            val table=org.json.JSONArray().put(JSONObject().put("subjectId",1).put("title",2).put("subjectType",3).put("releaseDate",4).put("detailPath",5))
+                .put("123").put("Moon Sailor").put(1).put("2022-01-01").put("moon-sailor-authoritative-path")
+            val page="<script id=__NUXT_DATA__ type=application/json>$table</script>"
+            PlaybackApiFixture.requests.clear()
+            PlaybackApiFixture.responder={ req -> when {
+                req.url.host=="api.themoviedb.org" -> {
+                    if(req.url.encodedPath.contains("/search/")) response(req,"{\"results\":[]}") else {
+                        check(req.url.queryParameter("append_to_response")?.contains("translations")==true)
+                        response(req,translated.toString())
+                    }
+                }
+                req.url.host=="moviebox.ph" -> response(req,page)
+                req.url.encodedPath.endsWith("subject-api/get") -> response(req,envelope(meta))
+                req.url.encodedPath.endsWith("ranking-list") -> response(req,"{}",true)
+                req.url.encodedPath.endsWith("subject/play") -> {
+                    check(req.url.queryParameter("subjectId")=="123" && req.url.queryParameter("se")=="0" && req.url.queryParameter("ep")=="0")
+                    response(req,"""{"code":0,"data":{"subjectId":"123","se":0,"ep":0,"streams":[{"id":"s1","url":"$media"}]}}""")
+                }
+                else -> response(req,"{}")
+            } }
+            val links=mutableListOf<ExtractorLink>()
+            val payload="""{"id":10,"tmdbId":"10","title":"Pelaut di Bulan","year":2022,"type":"movie","isTvSeries":false}"""
+            check(PROVIDER().loadLinks(payload,false,{},links::add))
+            check(links.single().source=="PROVIDER")
+        }
         test("recorded Spider-Man MainAPI verifies work and H5 path without consulting optional aliases") {
-            val html=java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-nuxt.html").readText()
+            val html=java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-stars-nuxt.html").readText()
             PlaybackApiFixture.requests.clear()
             PlaybackApiFixture.responder={ req ->
                 when {
-                    req.url.host=="api.themoviedb.org" -> if(req.url.encodedPath.contains("/search/")) response(req,"""{"results":[{"id":969681,"title":"Spider-Man: Brand New Day","release_date":"2026-07-29"}]}""") else response(req,JSONObject().put("id",969681).put("overview",JSONObject(java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-detail.json").readText()).getJSONObject("data").getString("description")).toString())
+                    req.url.host=="api.themoviedb.org" -> if(req.url.encodedPath.contains("/search/")) response(req,"""{"results":[{"id":969681,"title":"Spider-Man: Brand New Day","release_date":"2026-07-29"}]}""") else response(req,java.io.File(System.getProperty("migration.fixtures"),"spiderman-tmdb-bilingual.json").readText())
                     req.url.host=="moviebox.ph" -> {
                         if(req.url.encodedPath.contains("searchResult"))
                             check(req.url.queryParameter("keyword")=="Spider-Man: Brand New Day")

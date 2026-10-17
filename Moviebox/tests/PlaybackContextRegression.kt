@@ -94,6 +94,32 @@ fun main() = runBlocking {
             check(MovieboxPlaybackContext().resolve(id,id,title,null,JSONObject()) {body}.isEmpty())
         check(MovieboxPlaybackContext().resolve(id,id,title,null,JSONObject()) {throw java.io.IOException("fixture")}.isEmpty())
     }
+    test("different native and saved display languages are tried under one exact subject ID") {
+        val queries=mutableListOf<String>()
+        val got=MovieboxPlaybackContext().resolve(id,id,title,null,meta(name="Spider-Man: Hari Baru")) { url ->
+            val query=java.net.URLDecoder.decode(url.substringAfter("keyword="),"UTF-8");queries+=query
+            if(query==title) html else catalog("999" to "unrelated-film")
+        }
+        check(got==slug && queries==listOf("Spider-Man: Hari Baru",title))
+    }
+    test("localized query never borrows a matching-title path from another subject") {
+        var reads=0
+        check(MovieboxPlaybackContext().resolve(id,id,title,null,meta(name="Spider-Man: Hari Baru")) {
+            reads++;catalog("999" to slug)
+        }.isEmpty() && reads==2)
+    }
+    test("one failed localized lookup does not suppress saved canonical title recovery") {
+        var reads=0
+        check(MovieboxPlaybackContext().resolve(id,id,title,null,meta(name="Spider-Man: Hari Baru")) {
+            reads++;if(reads==1) throw java.io.IOException("fixture") else html
+        }==slug && reads==2)
+    }
+    test("public bilingual discovery retains canonical IDs and rejects malformed types references and scripts") {
+        val rows=MovieboxPlaybackContext().catalogSubjects(html)
+        check(rows.single().getString("subjectId")==id && rows.single().getString("title")==title)
+        check(MovieboxPlaybackContext().catalogSubjects("<script>evil()</script>").isEmpty())
+        check(MovieboxPlaybackContext().catalogSubjects("<script id=__NUXT_DATA__ type=application/json>[{\"subjectId\":4294967297,\"title\":2,\"subjectType\":3},\"123\",\"Title\",1]</script>").isEmpty())
+    }
     test("context cache is ID-scoped short-lived and cannot override an explicit contradiction") {
         var now=0L;var reads=0
         val reader=MovieboxPlaybackContext(clock={now})
@@ -157,6 +183,33 @@ fun main() = runBlocking {
         } }
     }
     try {
+        test("actual Moviebox search and quick search recover Indonesian query through public catalog without bearer") {
+            for(query in listOf("Hari Baru","Brand New Day")) {
+                PlaybackApiFixture.requests.clear()
+                PlaybackApiFixture.responder={ req -> when {
+                    req.url.host=="moviebox.ph" -> {
+                        check(req.url.queryParameter("keyword")==query && req.header("Authorization")==null && req.header("Cookie")==null)
+                        response(req,html)
+                    }
+                    else -> response(req,code=403)
+                } }
+                val results=MovieBoxProvider().quickSearch(query)
+                check(results.single().url.endsWith("id=$id") && results.single().name==title)
+            }
+        }
+        test("native search survives public catalog failure and duplicate public IDs do not replace native results") {
+            for(publicAvailable in listOf(false,true)) {
+                PlaybackApiFixture.requests.clear()
+                PlaybackApiFixture.responder={ req -> when {
+                    req.url.encodedPath.endsWith("ranking-list") -> response(req,token=true)
+                    req.url.encodedPath.endsWith("search/v2") -> response(req,"""{"code":0,"data":{"results":[{"subjects":[{"subjectId":"$id","title":"$title","subjectType":1}]}]}}""")
+                    req.url.host=="moviebox.ph" -> if(publicAvailable) response(req,html) else response(req,code=503)
+                    else -> response(req,code=403)
+                } }
+                val results=MovieBoxProvider().search(title)
+                check(results.single().url.endsWith("id=$id") && results.single().name==title)
+            }
+        }
         test("actual old Spider-Man payload recovers authoritative H5 path before validated callback") {
             fixture()
             val result=playback(MovieBoxProvider(),"""{"subjectId":"$id","se":0,"ep":0,"subjectType":1}""")

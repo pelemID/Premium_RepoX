@@ -936,22 +936,26 @@ class MovieBoxProvider : MainAPI() {
     // 2. SEARCH
     override suspend fun search(query: String): List<SearchResponse> {
         Log.d(TAG, "[SEARCH] keyword=$query")
-        val bearerToken = getBearerToken()
-        if (bearerToken == null) {
-            Log.e(TAG, "[SEARCH] bearer token null")
-            return emptyList()
+        return coroutineScope {
+            val native=async {
+                withTimeoutOrNull(5000) {
+                    try {
+                        val bearerToken=getBearerToken() ?: return@withTimeoutOrNull emptyList<SearchResponse>()
+                        val body=JSONObject().put("page",1).put("perPage",10).put("keyword",query).put("tabId","").toString()
+                        parseSearchResults(postSigned("/wefeed-mobile-bff/subject-api/search/v2",body,bearerToken))
+                    } catch(e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+                }.orEmpty()
+            }
+            val public=withTimeoutOrNull(6000) {
+                try {
+                    val url="https://moviebox.ph/web/searchResult?keyword=${URLEncoder.encode(query.trim().take(200),"UTF-8")}"
+                    val response=playbackRequest(url,mapOf("User-Agent" to MovieboxPlayback.WEB_UA,"Referer" to "https://moviebox.ph/"))
+                    response?.takeIf { it.first==200 }?.second?.let { playbackContext.catalogSubjects(it) }
+                        .orEmpty().mapNotNull(::subjectToSearchResponse)
+                } catch(e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+            }.orEmpty()
+            (native.await()+public).distinctBy { it.url }.also { Log.d(TAG,"[SEARCH] returning=${it.size}") }
         }
-        val body = JSONObject()
-            .put("page", 1)
-            .put("perPage", 10)
-            .put("keyword", query)
-            .put("tabId", "")
-            .toString()
-
-        val raw = postSigned("/wefeed-mobile-bff/subject-api/search/v2", body, bearerToken)
-        val out = parseSearchResults(raw)
-        Log.d(TAG, "[SEARCH] returning=${out.size}")
-        return out
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)

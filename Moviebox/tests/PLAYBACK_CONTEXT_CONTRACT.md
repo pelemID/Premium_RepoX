@@ -76,3 +76,11 @@ bash gradlew makePluginsJson
 
 Fixture PASS, live H5 response PASS, validated live CDN media and Android device
 playback must be reported separately. A fixture is never device playback proof.
+
+## Bilingual follow-up
+
+Native/original/saved titles may now differ by language. Context recovery tries
+at most three nonempty distinct server/saved titles under the same six-second
+deadline and still accepts only the exact subject ID. Public catalog search also
+augments native search for localized queries. See
+`AdiDrakor/tests/BILINGUAL_DISCOVERY_CONTRACT.md` for fresh observations and limits.
