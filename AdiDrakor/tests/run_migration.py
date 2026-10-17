@@ -35,6 +35,16 @@ for module, package in MODULES.items():
     port=port.replace(module+"MovieboxPlayback","MovieboxPlayback")
     port_flow=port[port.index("    fun getVideoInterceptor("):port.index("    suspend fun resolve(")]
     upstream_flow=upstream_flow.replace("override fun","fun").replace("override suspend fun","suspend fun")
+    # Standalone Moviebox now recovers navigation context; the Adi engines already
+    # receive verified context through their own independent TMDB adapters.
+    context_hook='''            val path = playbackContext.knownPath(detail,subject).orEmpty().ifBlank {
+                playbackContext.resolve(subject,selected.subjectId,selected.title,selected.detailPath,detail) { url ->
+                    playbackRequest(url,mapOf("User-Agent" to MovieboxPlayback.WEB_UA,"Referer" to "https://moviebox.ph/"))
+                        ?.takeIf { it.first==200 }?.second
+                }
+            }'''
+    assert upstream_flow.count(context_hook)==1, "unexpected standalone context hook"
+    upstream_flow=upstream_flow.replace(context_hook,'''            val path = MovieboxPlayback.detailPath(detail,subject)''')
     port_flow=port_flow.replace(',\n        metadataContext: Map<String,JSONObject> = emptyMap(),\n        onStage: (String) -> Unit = {}', '')
     port_flow=port_flow.replace('            onStage(if(candidates.isEmpty()) "H5_NO_STREAM" else if(count==0) "H5_MEDIA_INVALID" else "PLAYBACK_SUCCESS")\n','')
     port_flow=port_flow.replace('            metadataContext[subject]?.takeIf { MovieboxPlayback.text(it,"subjectId")==subject }?.let { return it }\n','')

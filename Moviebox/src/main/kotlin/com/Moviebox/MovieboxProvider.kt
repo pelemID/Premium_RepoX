@@ -27,6 +27,7 @@ import java.net.URLDecoder
 import java.net.URI
 
 class MovieBoxProvider : MainAPI() {
+    private val playbackContext = MovieboxPlaybackContext()
     override var mainUrl = "https://api3.aoneroom.com"
     override var name = "MovieBox"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
@@ -959,7 +960,9 @@ class MovieBoxProvider : MainAPI() {
         val subjectId: String,
         val se: Int,
         val ep: Int,
-        val subjectType: Int = 1
+        val subjectType: Int = 1,
+        val title: String? = null,
+        val detailPath: String? = null
     )
 
     private suspend fun fetchRecommendations(subjectId: String, bearer: String?): List<SearchResponse> {
@@ -1113,6 +1116,10 @@ class MovieBoxProvider : MainAPI() {
 
         val detailRes = responseGet.parsedSafe<SubjectDetailResponse>()
         val subject = detailRes?.data ?: return null
+        if(!subject.subjectId.isNullOrBlank() && subject.subjectId!=cleanId) return null
+        val contextMetadata=MovieboxPlayback.metadata(responseGet.text,cleanId)
+        val selectedPath=contextMetadata?.takeIf { MovieboxPlayback.text(it,"subjectId")==cleanId }
+            ?.let { playbackContext.knownPath(it,cleanId) }
 
         val displayTitle = subject.title ?: "MovieBox Content"
         val poster = subject.cover?.url
@@ -1160,7 +1167,7 @@ class MovieBoxProvider : MainAPI() {
 
             for (epNum in 1..maxEp) {
                 episodesList.add(
-                    newEpisode(EpData(cleanId, seNum, epNum, typeInt)) {
+                    newEpisode(EpData(cleanId, seNum, epNum, typeInt, displayTitle, selectedPath)) {
                         this.name = "Episode $epNum"
                         this.season = seNum
                         this.episode = epNum
@@ -1174,7 +1181,7 @@ class MovieBoxProvider : MainAPI() {
         return if (isSeries) {
             if (episodesList.isEmpty()) {
                 episodesList.add(
-                    newEpisode(EpData(cleanId, 1, 1, 2)) {
+                    newEpisode(EpData(cleanId, 1, 1, 2, displayTitle, selectedPath)) {
                         this.name = "Episode 1"
                         this.season = 1
                         this.episode = 1
@@ -1198,7 +1205,7 @@ class MovieBoxProvider : MainAPI() {
                 }
             }
         } else {
-            newMovieLoadResponse(displayTitle, url, TvType.Movie, EpData(cleanId, 0, 0, 1)) {
+            newMovieLoadResponse(displayTitle, url, TvType.Movie, EpData(cleanId, 0, 0, 1, displayTitle, selectedPath)) {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = yearInt
@@ -1386,7 +1393,12 @@ class MovieBoxProvider : MainAPI() {
         for ((subject,audio,initialDetail) in orderedSubjects) {
             val meta = if (subject == selected.subjectId) initialDetail else metadata(subject)
             val detail = meta ?: initialDetail ?: JSONObject()
-            val path = MovieboxPlayback.detailPath(detail,subject)
+            val path = playbackContext.knownPath(detail,subject).orEmpty().ifBlank {
+                playbackContext.resolve(subject,selected.subjectId,selected.title,selected.detailPath,detail) { url ->
+                    playbackRequest(url,mapOf("User-Agent" to MovieboxPlayback.WEB_UA,"Referer" to "https://moviebox.ph/"))
+                        ?.takeIf { it.first==200 }?.second
+                }
+            }
             Log.d(TAG,"[PLAYBACK-H5] subject=$subject metadata=${meta != null} detailPathAvailable=${path.isNotBlank()} se=$se ep=$ep")
             val encodedPath = URLEncoder.encode(path,"UTF-8")
             val webDetail = MovieboxPlayback.text(detail,"detailUrl")
