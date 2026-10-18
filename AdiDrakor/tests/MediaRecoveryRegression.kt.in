@@ -224,7 +224,10 @@ fun main(): Unit=runBlocking {
             } }
             val links=mutableListOf<ExtractorLink>()
             check(V4PROVIDER().loadLinks("""{"id":969681,"tmdbId":"969681","title":"$english","year":2026,"type":"movie","isTvSeries":false}""",false,{},links::add))
-            check(links.size==4 && links.all {it.source=="V4PROVIDER"})
+            // The multisource boundary emits each URL once, retaining DASH plus the
+            // first validated progressive URL even when the catalog repeats quality labels.
+            check(links.size==2 && links.all {it.source=="Moviebox"})
+            check(links.map { it.url }.distinct().size==links.size)
             val log=V4LOG.snapshot();check("IDENTITY_VERIFIED" in log && "MEDIA_VALIDATED" in log && "PLAYBACK_READY" in log)
             check("scope-secret" !in log && root !in log && "Authorization" !in log)
         }

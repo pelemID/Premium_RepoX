@@ -5,6 +5,7 @@ Moviebox test sources are read only and never packaged. No cross-module producti
 import os
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import tempfile
 
@@ -13,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 env = runpy.run_path(str(ROOT / "Moviebox/tests/run_regression.py"))
 MODULES = {"AdiDrakor": "com.AdiDrakor", "AdiFilmSemi": "com.michat88",
            "AdiXtream": "com.adixtream", "Adicinemax21": "com.Adicinemax21"}
+isolation = tempfile.TemporaryDirectory(prefix="four-plugin-proxy-")
+isolation_jars = []
 for module, package in MODULES.items():
     source = sorted((ROOT / module / "src/main/kotlin").rglob("*.kt"))
     production = "\n".join(p.read_text() for p in source)
@@ -20,6 +23,13 @@ for module, package in MODULES.items():
         # Production comments may mention the retired endpoint; no quoted request path may use it.
         assert forbidden not in production if forbidden != "play-info" else 'subject-api/play-info' not in production
     assert production.count("@CloudstreamPlugin") == 1
+    assert production.count("registerMainAPI(") == 1
+    assert "class OppaPlayback : MainAPI" not in production
+    assert "class IdlixSource : MainAPI" not in production
+    for adapter in ["MediaIdentity", "IdlixSource", "Majorplay", "OppaSource", "OppaPlayback", "HydraxMedia", "LocalProxy", "MultiSource"]:
+        canonical=(ROOT / "AdiDrakor/src/main/kotlin/com/AdiDrakor/sources" / (adapter+".kt")).read_text()
+        actual=next(p for p in source if p.name==adapter+".kt").read_text().replace(package+".sources","com.AdiDrakor.sources")
+        assert actual==canonical, "multisource adapter parity drift: "+module+"/"+adapter
     assert f"registerMainAPI({module}())" in production
     assert 'srcDir(' not in (ROOT / module / "build.gradle.kts").read_text()
     assert "com.Moviebox" not in production
@@ -58,6 +68,9 @@ for module, package in MODULES.items():
     with tempfile.TemporaryDirectory(prefix=f"{module}-h5-") as tmp:
         tmp = Path(tmp)
         env["compile_to"](tmp / "production.jar", source)
+        retained=Path(isolation.name) / (module+".jar")
+        shutil.copyfile(tmp / "production.jar", retained)
+        isolation_jars.append(retained)
         tests = []
         for filename in ["PlaybackRegression.kt", "PlaybackIntegration.kt"]:
             text=(ROOT / "Moviebox/tests" / filename).read_text().replace("package com.Moviebox",f"package {package}")
@@ -72,14 +85,24 @@ for module, package in MODULES.items():
         for key,value in {"PACKAGE":package,"V4MATCHER":module+"MovieboxMapping","V4PLAYBACK":module+"MovieboxPlayback","V4MEDIA":module+"MovieboxMedia","V4LOG":module+"MovieboxDiagnostics","V4ENGINE":module+"MovieboxEngine","V4PROVIDER":module}.items():
             text=text.replace(key,value)
         target=tmp / "MediaRecoveryRegression.kt";target.write_text(text);tests.append(target)
+        text=(ROOT / "AdiDrakor/tests/MultiSourceRegression.kt.in").read_text().replace("PACKAGE",package)
+        target=tmp / "MultiSourceRegression.kt";target.write_text(text);tests.append(target)
+        text=(ROOT / "AdiDrakor/tests/ProxyRegression.kt.in").read_text().replace("PACKAGE",package)
+        target=tmp / "ProxyRegression.kt";target.write_text(text);tests.append(target)
         tests += sorted((ROOT / "Moviebox/tests/shims").glob("*.kt"))
+        tests += sorted((ROOT / "AdiDrakor/tests/shims").glob("*.kt"))
         # Compile fixtures separately against the actual production jar. Friend access only
         # exposes internal ports to tests; test shims precede the SDK at runtime.
         subprocess.run(["java","-cp",env["compiler_cp"],"org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
             "-no-stdlib","-no-reflect","-jvm-target","11","-Xfriend-paths="+str(tmp / "production.jar"),
             "-classpath",str(tmp / "production.jar")+os.pathsep+env["classpath"],
             "-d",str(tmp / "tests.jar"),*map(str,tests)],check=True)
-        for entry in ["PlaybackRegressionKt","PlaybackIntegrationKt","MappingRegressionKt","MediaRecoveryRegressionKt"]:
+        for entry in ["sources.MultiSourceRegressionKt","sources.ProxyRegressionKt","PlaybackRegressionKt","PlaybackIntegrationKt","MappingRegressionKt","MediaRecoveryRegressionKt"]:
             subprocess.run(["java","-Dmigration.fixtures="+str(ROOT / "AdiDrakor/tests/fixtures"),"-cp",str(tmp / "tests.jar")+os.pathsep+str(tmp / "production.jar")+os.pathsep+env["classpath"],package+"."+entry],check=True,timeout=150)
     print(f"PASS {module}: isolated SDK compile, original H5 parity, TMDB mapping and registered MainAPI",flush=True)
-print("ALL FOUR H5 MIGRATIONS PASS; live service and Android device playback NOT_TESTED")
+isolation_test=Path(isolation.name) / "isolation-tests.jar"
+env["compile_to"](isolation_test, [ROOT / "AdiDrakor/tests/ProxyIsolation.kt"])
+subprocess.run(["java","-cp",os.pathsep.join(map(str,[isolation_test,*isolation_jars]))+os.pathsep+env["classpath"],
+    "ProxyIsolationKt"],check=True,timeout=30)
+isolation.cleanup()
+print("ALL FOUR H5 + MULTISOURCE REGRESSIONS PASS; live service and Android device playback NOT_TESTED")

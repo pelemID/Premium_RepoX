@@ -485,7 +485,7 @@ fun main() = runBlocking {
         val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
         val payload="""{"id":1,"tmdbId":"1","title":"Example","year":2022,"type":"${if(tv) "tv" else "movie"}","isTvSeries":$tv,"season":${if(tv) 2 else 9},"episode":${if(tv) 4 else 9}}"""
         check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
-        check(links.single().source == "PROVIDER")
+        check(links.single().source == "Moviebox")
         check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
         val play=PlaybackApiFixture.requests.first { it.url.encodedPath.endsWith("subject/play") }
         check(play.url.queryParameter("se") == if(tv) "2" else "0")
@@ -516,7 +516,7 @@ fun main() = runBlocking {
             val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
             val payload="""{"id":1291595,"tmdbId":"1291595","title":"Insidious: Out of the Further","year":2026,"type":"movie","isTvSeries":false}"""
             check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
-            check(links.single().source=="PROVIDER")
+            check(links.single().source=="Moviebox")
             check(PlaybackApiFixture.requests.none { it.url.encodedPath.contains("play-info") })
         }
 
@@ -546,7 +546,7 @@ fun main() = runBlocking {
             val links=mutableListOf<ExtractorLink>()
             val payload="""{"id":10,"tmdbId":"10","title":"Pelaut di Bulan","year":2022,"type":"movie","isTvSeries":false}"""
             check(PROVIDER().loadLinks(payload,false,{},links::add))
-            check(links.single().source=="PROVIDER")
+            check(links.single().source=="Moviebox")
         }
         test("recorded Spider-Man MainAPI verifies work and H5 path without consulting optional aliases") {
             val html=java.io.File(System.getProperty("migration.fixtures"),"spiderman-public-stars-nuxt.html").readText()
@@ -571,7 +571,7 @@ fun main() = runBlocking {
             val links=mutableListOf<ExtractorLink>();val subs=mutableListOf<SubtitleFile>()
             val payload="""{"id":969681,"tmdbId":"969681","title":"Spider-Man: Brand New Day","year":2026,"type":"movie","isTvSeries":false,"alternativeTitles":["Spider-Man 3"]}"""
             check(PROVIDER().loadLinks(payload,false,subs::add,links::add))
-            check(links.single().source=="PROVIDER")
+            check(links.single().source=="Moviebox")
             check(PlaybackApiFixture.requests.count { it.url.encodedPath.contains("searchResult") }==1)
         }
         test("House of the Dragon MainAPI uses public seasons after mobile auth failure with exact requested indices") {
@@ -593,7 +593,7 @@ fun main() = runBlocking {
                 val played=PROVIDER().loadLinks(payload,false,subs::add,links::add)
                 check(played==(ep!=9))
                 if(ep==9) check(links.isEmpty() && PlaybackApiFixture.requests.none { it.url.encodedPath.endsWith("subject/play") })
-                else check(links.single().source=="PROVIDER")
+                else check(links.single().source=="Moviebox")
             }
         }
         test("MainAPI continues discovery after empty H5 and never recovers through a conflicting work") {
@@ -623,7 +623,7 @@ fun main() = runBlocking {
                 val payload="""{"id":1,"tmdbId":"1","title":"Example","year":2022,"type":"movie","isTvSeries":false,"alternativeTitles":["Official Alternate"]}"""
                 val played=PROVIDER().loadLinks(payload,false,subs::add,links::add)
                 check(played==!conflict)
-                if(conflict) check(links.isEmpty()) else check(links.single().source=="PROVIDER")
+                if(conflict) check(links.isEmpty()) else check(links.single().source=="Moviebox")
                 val queries=PlaybackApiFixture.requests.filter { it.url.encodedPath.endsWith("search/v2") }.map { req ->
                     val buffer=okio.Buffer();req.body!!.writeTo(buffer);JSONObject(buffer.readUtf8()).getString("keyword")
                 }

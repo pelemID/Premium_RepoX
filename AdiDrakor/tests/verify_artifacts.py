@@ -23,7 +23,12 @@ for name,package in expected.items():
         assert manifest['pluginClassName']==cls, (name,manifest)
         assert manifest['name']==name
         assert manifest['version']==item['version']
-        assert archive.read('classes.dex').startswith(b'dex\n')
+        dex=archive.read('classes.dex')
+        assert dex.startswith(b'dex\n')
+        if name!='Moviebox':
+            for adapter in ['MultiSource','IdlixSource','Majorplay','OppaSource','OppaPlayback','LocalProxy','HydraxMedia']:
+                assert ('L'+package.replace('.','/')+'/sources/'+adapter+';').encode() in dex, (name,adapter)
+            assert b'Lcom/IdlixProvider/' not in dex and b'Lcom/OppaDrama/' not in dex, 'Cross-plugin dependency'
     assert item['fileSize']==file.stat().st_size
     assert item['fileHash']=='sha256-'+hashlib.sha256(file.read_bytes()).hexdigest()
     print('PASS artifact',name,'version',item['version'],'single manifest entry',cls)

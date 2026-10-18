@@ -6,6 +6,10 @@ import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
 class AdiXtreamPlugin : Plugin() {
+    override fun beforeUnload() {
+        com.adixtream.sources.LocalProxy.stop()
+    }
+
     override fun load(context: Context) {
         AdiXtreamMovieboxEngine.attachContext(context)
         openSettings = { settingsContext -> AdiXtreamMovieboxDiagnostics.show(settingsContext) }

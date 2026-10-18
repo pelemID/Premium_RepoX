@@ -312,8 +312,12 @@ open class Adicinemax21 : TmdbProvider() {
 
     private val movieboxEngine by lazy { Adicinemax21MovieboxEngine(name,apiKey) }
 
+    private val multiSource by lazy { com.Adicinemax21.sources.MultiSource(apiKey) }
+
     override fun getVideoInterceptor(extractorLink: ExtractorLink): okhttp3.Interceptor =
-        movieboxEngine.getVideoInterceptor(extractorLink)
+        if (com.Adicinemax21.sources.MultiSource.isAdditional(extractorLink))
+            com.Adicinemax21.sources.MultiSource.additionalInterceptor()
+        else movieboxEngine.getVideoInterceptor(extractorLink)
 
     override suspend fun loadLinks(
         data: String,
@@ -322,11 +326,17 @@ open class Adicinemax21 : TmdbProvider() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val item = com.lagradost.cloudstream3.utils.AppUtils.tryParseJson<LinkData>(data) ?: return false
-        return movieboxEngine.resolve(
-            listOfNotNull(item.title, item.orgTitle, item.jpTitle, item.altTitle) + item.alternativeTitles, item.airedYear ?: item.year, when (item.type) { "movie" -> 1; "tv" -> 2; else -> return false }, item.season, item.episode,
-            subtitleCallback, callback,
-            tmdbId = item.id?.toString() ?: return false, imdbId = item.imdbId,
+        val id = item.id?.toString() ?: return false
+        val type = when(item.type) { "movie" -> 1; "tv" -> 2; else -> return false }
+        val titles = listOfNotNull(item.title,item.orgTitle,item.jpTitle,item.altTitle) + item.alternativeTitles
+        return multiSource.resolve(com.Adicinemax21.sources.MediaIdentity.Request(titles,item.airedYear ?: item.year,type,item.season,item.episode,id,item.imdbId,seasonYear=item.year),
+            subtitleCallback,callback) { sourceSubtitle,sourceLink ->
+            movieboxEngine.resolve(
+            listOfNotNull(item.title, item.orgTitle, item.jpTitle, item.altTitle) + item.alternativeTitles, item.airedYear ?: item.year, type, item.season, item.episode,
+            sourceSubtitle, sourceLink,
+            tmdbId = id, imdbId = item.imdbId,
             overview = item.overview, runtimeMinutes = item.runtimeMinutes, castNames = item.castNames)
+        }
     }
 
     data class LinkData(
