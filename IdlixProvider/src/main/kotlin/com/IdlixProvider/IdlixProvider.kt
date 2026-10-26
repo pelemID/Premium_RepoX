@@ -40,11 +40,7 @@ class IdlixProvider : MainAPI() {
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=disney-plus" to "Disney+",
         "$mainUrl/api/browse?page=1&limit=36&sort=latest&network=apple-tv-plus" to "Apple TV+",
         "$mainUrl/api/movies?page=1&limit=36&sort=createdAt" to "Movie",
-        "$mainUrl/api/series?page=1&limit=36&sort=createdAt" to "Series",
-        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=horror" to "Horror",
-        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=drama" to "Drama",
-        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=mystery" to "Mystery",
-        "$mainUrl/api/browse?page=1&limit=36&sort=latest&genre=thriller" to "Thriller"
+        "$mainUrl/api/series?page=1&limit=36&sort=createdAt" to "Series"
     )
 
     private fun formatTitle(title: String, season: Int?): String {
