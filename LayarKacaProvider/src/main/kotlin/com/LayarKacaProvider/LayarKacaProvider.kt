@@ -38,7 +38,7 @@ class LayarKacaProvider : MainAPI() {
         "genre/action/" to "Action Terbaru",
 //        "genre/romance/" to "Romance Terbaru",
         "genre/comedy/" to "Comedy Terbaru",
-        "genre/horror/" to "Horror Terbaru",
+//        "genre/horror/" to "Horror Terbaru",
         "country/south-korea/" to "Korea Terbaru",
         "country/japan/" to "Jepang Terbaru",
         "country/thailand/" to "Thailand Terbaru",
